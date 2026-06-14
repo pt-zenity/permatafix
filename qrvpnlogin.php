@@ -7,7 +7,8 @@
  *       → polling status vpn_verify_list → tampilkan hasil connect
  *
  * Endpoint assist-pro.net:
- *   Base URL : http://aa.pro.sis1.net/assist-pro.net
+ *   Base URL (primary)  : http://aa.pro.sis1.net/assist-pro.net
+ *   Base URL (alternate) : http://switching.mcoll.sis1.net/assist-pro.net
  *   POST index_mobile.php   body JSON (cCode=...)
  *   MTI=02, KT=02104  → QRSCAN    (mobile scan → set Status=3)
  *   MTI=04, KT=04001  → CEKVPN    (PC polling → can connect)
@@ -19,16 +20,70 @@
 // ─────────────────────────────────────────────
 //  KONFIGURASI — sesuaikan dengan lingkungan
 // ─────────────────────────────────────────────
-define('API_BASE_URL',    'http://aa.pro.sis1.net/assist-pro.net');  // URL assist-pro.net
-define('API_ENDPOINT',    'index_mobile.php');  // relatif dari API_BASE_URL
+
+// Daftar URL kandidat — script akan mencoba dari atas ke bawah
+// Gunakan konstanta API_BASE_URL untuk override manual, atau biarkan
+// auto-select memakai API_BASE_URLS (urutan prioritas)
+define('API_BASE_URL_PRIMARY',   'http://aa.pro.sis1.net/assist-pro.net');
+define('API_BASE_URL_ALTERNATE', 'http://switching.mcoll.sis1.net/assist-pro.net');
+
+// Override manual: isi salah satu URL di bawah, atau kosongkan ('') untuk auto-select
+define('API_BASE_URL_OVERRIDE',  '');
+
+// Endpoint index_mobile.php (relatif dari base URL)
+define('API_ENDPOINT',    'index_mobile.php');
 define('APP_TITLE',       'QR VPN Login');
 define('APP_VERSION',     '1.0.0');
 define('CURL_TIMEOUT',    15);
+define('CURL_CONNECT_TIMEOUT', 5);  // timeout cek reachability per URL
 
 // Device identifier untuk script ini (digunakan sebagai ClientID di QRSCAN)
 define('SCRIPT_CLIENT_ID', 'QRVPNLOGIN-' . substr(md5(gethostname() . __FILE__), 0, 12));
 define('SCRIPT_MAC',       '00:00:00:00:00:00'); // fallback MacAddress
 define('SCRIPT_APPVER',    APP_VERSION);
+
+// ─────────────────────────────────────────────
+//  RESOLVE BASE URL (auto-select atau override)
+// ─────────────────────────────────────────────
+
+/**
+ * Cek apakah URL base dapat dijangkau (HEAD request ringan)
+ * Return true jika HTTP response code > 0 (server menjawab)
+ */
+function isUrlReachable(string $baseUrl): bool {
+    $url = rtrim($baseUrl, '/') . '/' . API_ENDPOINT;
+    $ch  = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_NOBODY         => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => CURL_CONNECT_TIMEOUT,
+        CURLOPT_CONNECTTIMEOUT => CURL_CONNECT_TIMEOUT,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => false,
+        CURLOPT_FOLLOWLOCATION => true,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code > 0;
+}
+
+/**
+ * Resolve URL aktif:
+ *  1. Jika API_BASE_URL_OVERRIDE diisi → pakai itu
+ *  2. Coba PRIMARY   → jika reachable pakai
+ *  3. Coba ALTERNATE → jika reachable pakai
+ *  4. Fallback ke PRIMARY (offline/error tetap tampil pesan jelas)
+ */
+function resolveBaseUrl(): string {
+    if (API_BASE_URL_OVERRIDE !== '') return API_BASE_URL_OVERRIDE;
+    if (isUrlReachable(API_BASE_URL_PRIMARY))   return API_BASE_URL_PRIMARY;
+    if (isUrlReachable(API_BASE_URL_ALTERNATE)) return API_BASE_URL_ALTERNATE;
+    return API_BASE_URL_PRIMARY; // fallback
+}
+
+// Resolved sekali saat request masuk, disimpan di variable global
+$RESOLVED_BASE_URL = resolveBaseUrl();
 
 // ─────────────────────────────────────────────
 //  FUNGSI API CALLS
@@ -40,9 +95,10 @@ define('SCRIPT_APPVER',    APP_VERSION);
  * Response: array hasil json_decode
  */
 function apiCall(array $payload): array {
-    $baseUrl = rtrim(API_BASE_URL, '/');
+    global $RESOLVED_BASE_URL;
+    $baseUrl = rtrim($RESOLVED_BASE_URL, '/');
     if ($baseUrl === '') {
-        return ['Status' => 0, 'MSG' => 'API_BASE_URL belum dikonfigurasi'];
+        return ['Status' => 0, 'MSG' => 'Base URL tidak dapat di-resolve'];
     }
     $url = $baseUrl . '/' . API_ENDPOINT;
 
@@ -53,7 +109,7 @@ function apiCall(array $payload): array {
         CURLOPT_POST           => true,
         CURLOPT_POSTFIELDS     => ['cCode' => $json],
         CURLOPT_TIMEOUT        => CURL_TIMEOUT,
-        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_CONNECTTIMEOUT => CURL_CONNECT_TIMEOUT,
         CURLOPT_SSL_VERIFYPEER => false,
         CURLOPT_SSL_VERIFYHOST => false,
         CURLOPT_HTTPHEADER     => ['Accept: application/json'],
@@ -223,8 +279,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['_action'])) {
 $scriptClientId = SCRIPT_CLIENT_ID;
 $scriptMac      = SCRIPT_MAC;
 $scriptAppVer   = SCRIPT_APPVER;
-$apiConfigured  = (API_BASE_URL !== '') ? 'true' : 'false';
-$apiBaseUrl     = htmlspecialchars(API_BASE_URL);
+$apiConfigured  = 'true';
+$apiBaseUrl     = htmlspecialchars($RESOLVED_BASE_URL);
+$apiIsPrimary   = ($RESOLVED_BASE_URL === API_BASE_URL_PRIMARY);
+$apiIsAlt       = ($RESOLVED_BASE_URL === API_BASE_URL_ALTERNATE);
+$apiIsOverride  = (API_BASE_URL_OVERRIDE !== '');
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -380,14 +439,23 @@ $apiBaseUrl     = htmlspecialchars(API_BASE_URL);
 
 <div style="max-width:860px; margin:0 auto; padding:20px 16px;">
 
-  <!-- Config banner jika belum dikonfigurasi -->
-  <?php if (API_BASE_URL === ''): ?>
-  <div class="config-banner">
-    <i class="fas fa-triangle-exclamation"></i>
-    <strong> Konfigurasi diperlukan</strong> — Edit konstanta <code>API_BASE_URL</code> di bagian atas file ini.
-    Contoh: <code>define('API_BASE_URL', 'https://app.assist-pro.net');</code>
+  <!-- Info banner: URL aktif + status auto-select -->
+  <div class="config-banner" style="background:rgba(56,189,248,.08);border-color:rgba(56,189,248,.3);color:#7dd3fc;">
+    <i class="fas fa-plug-circle-check"></i>
+    <strong> Base URL Aktif:</strong>
+    <code style="margin-left:6px;color:#e2e8f0;"><?= htmlspecialchars($RESOLVED_BASE_URL) ?>/<?= API_ENDPOINT ?></code>
+    <?php if ($apiIsOverride): ?>
+      <span style="margin-left:8px;font-size:11px;opacity:.7;">[Override manual]</span>
+    <?php elseif ($apiIsPrimary): ?>
+      <span style="margin-left:8px;font-size:11px;opacity:.7;">[Primary ✓]</span>
+    <?php elseif ($apiIsAlt): ?>
+      <span style="margin-left:8px;font-size:11px;opacity:.7;">[Alternate ✓ — primary tidak dapat dijangkau]</span>
+    <?php endif; ?>
+    <div style="margin-top:6px;font-size:11px;opacity:.65;">
+      Primary: <code><?= API_BASE_URL_PRIMARY ?></code> &nbsp;|&nbsp;
+      Alternate: <code><?= API_BASE_URL_ALTERNATE ?></code>
+    </div>
   </div>
-  <?php endif; ?>
 
   <!-- ─── TAB BAR ─── -->
   <div class="tab-bar" style="border-radius:12px 12px 0 0; overflow:hidden;">
@@ -733,9 +801,11 @@ $apiBaseUrl     = htmlspecialchars(API_BASE_URL);
 // ═══════════════════════════════════════════════════════
 //  CONFIG
 // ═══════════════════════════════════════════════════════
-const API_CONFIGURED = <?= $apiConfigured ?>;
-const CLIENT_ID      = '<?= $scriptClientId ?>';
-const SCRIPT_MAC     = '<?= $scriptMac ?>';
+const API_CONFIGURED  = <?= $apiConfigured ?>;
+const API_BASE_URL    = '<?= $apiBaseUrl ?>';
+const API_IS_ALT      = <?= $apiIsAlt ? 'true' : 'false' ?>;
+const CLIENT_ID       = '<?= $scriptClientId ?>';
+const SCRIPT_MAC      = '<?= $scriptMac ?>';
 
 // ═══════════════════════════════════════════════════════
 //  TAB SWITCHER
@@ -762,12 +832,14 @@ async function postAction(action, params = {}) {
 // Badge API status
 function updateApiBadge() {
   const el = document.getElementById('api-status-badge');
-  if (API_CONFIGURED) {
+  if (API_IS_ALT) {
+    el.className = 'badge badge-amber';
+    el.innerHTML = '<i class="fas fa-rotate" style="font-size:10px;"></i> Alternate URL';
+    el.title = 'Menggunakan URL alternatif: ' + API_BASE_URL;
+  } else {
     el.className = 'badge badge-green';
     el.innerHTML = '<i class="fas fa-circle" style="font-size:7px;"></i> API Terhubung';
-  } else {
-    el.className = 'badge badge-amber';
-    el.innerHTML = '<i class="fas fa-triangle-exclamation" style="font-size:10px;"></i> Belum Dikonfigurasi';
+    el.title = API_BASE_URL;
   }
 }
 document.addEventListener('DOMContentLoaded', updateApiBadge);
