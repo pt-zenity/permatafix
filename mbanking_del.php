@@ -128,26 +128,81 @@ function getAccessToken(): array {
     ]);
     $raw      = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr  = curl_error($ch);
     curl_close($ch);
 
-    // Strip PHP Notice/Warning HTML jika ada
+    // Simpan raw asli untuk debug sebelum diproses
+    $rawOriginal = $raw;
+
+    // Strip PHP Notice/Warning HTML jika ada (konten sebelum '{')
+    if ($raw === false || $raw === '') {
+        return [
+            'success'    => false,
+            'token'      => '',
+            'from_cache' => false,
+            'http_code'  => $httpCode,
+            'raw'        => '[curl error] ' . $curlErr,
+            'error'      => 'cURL gagal: ' . $curlErr,
+        ];
+    }
     $jsonStart = strpos($raw, '{');
-    if ($jsonStart !== false && $jsonStart > 0) {
+    if ($jsonStart === false) {
+        // Tidak ada JSON sama sekali
+        return [
+            'success'    => false,
+            'token'      => '',
+            'from_cache' => false,
+            'http_code'  => $httpCode,
+            'raw'        => '[no JSON] ' . substr($rawOriginal, 0, 500),
+            'error'      => 'Response bukan JSON (tidak ada "{"). Raw: ' . substr($rawOriginal, 0, 200),
+        ];
+    }
+    if ($jsonStart > 0) {
         $raw = substr($raw, $jsonStart);
+    }
+    // Strip trailing garbage setelah JSON object
+    $jsonEnd = strrpos($raw, '}');
+    if ($jsonEnd !== false) {
+        $raw = substr($raw, 0, $jsonEnd + 1);
     }
 
     $resp = json_decode($raw, true);
-    // Support dua format response:
-    //   Format A (lowercase) : $resp['data']['access_token'], $resp['access_token']
-    //   Format B (PascalCase): $resp['Data']['AccessToken']  ← myassist.sis1.net
+
+    // Jika json_decode gagal (null), coba strip BOM dan decode ulang
+    if ($resp === null) {
+        $rawClean = ltrim($raw, "\xEF\xBB\xBF\t\n\r ");
+        $resp = json_decode($rawClean, true);
+    }
+
+    // Jika masih null, kembalikan error dengan raw untuk diagnosis
+    if ($resp === null) {
+        return [
+            'success'    => false,
+            'token'      => '',
+            'from_cache' => false,
+            'http_code'  => $httpCode,
+            'raw'        => $raw,
+            'error'      => 'json_decode gagal. Raw (500 char): ' . substr($raw, 0, 500),
+        ];
+    }
+
+    // Ekstraksi token — support semua format yang diketahui:
+    //   Format A (lowercase) : data.access_token, access_token
+    //   Format B (PascalCase): Data.AccessToken   ← myassist.sis1.net
+    //   Format C (mixed)     : Data.Token, data.Token, Token
     $token = $resp['data']['access_token']
           ?? $resp['access_token']
           ?? $resp['Data']['AccessToken']
+          ?? $resp['Data']['Token']
+          ?? $resp['data']['Token']
+          ?? $resp['Token']
           ?? '';
+
     // LifeTime dari server dalam menit (mis. "15") — konversi ke detik
     $expiresRaw = $resp['data']['expires_in']
                ?? $resp['expires_in']
                ?? $resp['Data']['LifeTime']
+               ?? $resp['Data']['expires_in']
                ?? null;
     // Deteksi satuan: jika <= 1440 (maks 24 jam dalam menit), anggap menit
     $expiresIn = ($expiresRaw !== null)
@@ -177,7 +232,7 @@ function getAccessToken(): array {
         'from_cache' => false,
         'http_code'  => $httpCode,
         'raw'        => $raw,
-        'error'      => $resp['message'] ?? $resp['error'] ?? $resp['MSG'] ?? 'Token kosong',
+        'error'      => $resp['message'] ?? $resp['error'] ?? $resp['MSG'] ?? $resp['Message'] ?? ('Token kosong. Keys: ' . implode(',', array_keys($resp)) . (isset($resp['Data']) ? ' | Data keys: ' . implode(',', array_keys((array)$resp['Data'])) : '')),
     ];
 }
 
