@@ -9,6 +9,12 @@
  *   - TFDANA  (Transfer Dana Online / SKN Real-Time)
  *   - LLG     (Lalu Lintas Giro / SKN Batch)
  *   - RTGS    (Real-Time Gross Settlement)
+ *   - BIFAST  (BI-FAST: Permata SNAP [default] atau Danamon SNAP [fallback])
+ *
+ * BIFAST SNAP Provider:
+ *   - Permata SNAP (default): butuh agen_fitur.PermataSNAPTF = '1' di CBS
+ *   - Danamon SNAP (fallback): butuh agen_fitur.DanamonSNAPTF = '1' di CBS
+ *   ISO request identik — pilihan provider hanya mengubah routing di CBS layer
  *
  * AUTO-DETECTION dari source code assist-switching_v3_pro & assist-bpr.net:
  *   ✅ URL_GET_TOKEN, URL_DIGITAL, MFTFI → dari config/local_config.php
@@ -35,7 +41,7 @@
  *      dengan header: Authorization: Bearer {accessToken}
  *   4. Response di-parse dari ISO 8583 array
  *
- * Referensi: assist-switching_v3_pro v1.6.43 "Assist Pro Net"
+ * Referensi: assist-switching_v3_pro v1.6.44 "Assist Pro Net"
  *   - config/local_config.php
  *   - mvc/mbanking/mbanking.controller.php → ProsesInquiryPayment()
  *   - storage/cds/cache/*snap_tf_bank_permata.cache → KODE_AGEN + MFTFI
@@ -1397,16 +1403,20 @@ function buildISO8583PaymentRequest(array $params, string $accessToken, int $bia
         'DE037' => $de037,
         'DE039' => $de039,     // "00" = konfirmasi
         'DE044' => '0',
-        'DE048' => $de048,     // PAYTFDANA / PAYLLG / PAYRTGS
+        'DE048' => $de048,     // PAYBIFAST~~{KodeBIFAST} | PAYTFDANA~~{kodeBank}
         'DE052' => $de052,
         'DE061' => $de061,
         'DE102' => $de102,
         'DE103' => $de103,
     ];
 
+    // Routing provider (Permata/Danamon) ditentukan oleh agen_fitur di CBS,
+    // bukan oleh ISO request. ISO request identik untuk kedua provider.
+    // snap_provider hanya dipakai untuk display/debug di tf.php.
     return [
-        'MTI' => '002',        // DIGITAL_BANK — ReadRequest() hanya mengenal "002" untuk payment
-        'MSG' => $msg,         // MTI lama "200" tidak ada handler-nya → jatuh ke else → "Request salah!!"
+        'MTI'           => '002',        // DIGITAL_BANK — ReadRequest() hanya mengenal "002" untuk payment
+        'MSG'           => $msg,
+        '_snap_provider'=> strtolower($params['snap_provider'] ?? 'permata'), // info debug saja
     ];
 }
 
@@ -1471,16 +1481,18 @@ function parsePaymentResponse(array $httpResult): array {
  */
 function paymentTransferBank(array $params, int $biayaAdmin = 0): array {
     $debug = [];
+    $snapProvider = strtolower(trim($params['snap_provider'] ?? 'permata')); // 'permata' | 'danamon'
 
     // ── Validasi: nominal wajib diisi untuk payment ──────────
     $nominal = (int)preg_replace('/\D/', '', $params['nominal'] ?? '0');
     if ($nominal <= 0) {
         return [
-            'success' => false,
-            'step'    => 'validate',
-            'rc'      => 'XV',
-            'message' => 'Nominal transfer wajib diisi dan harus lebih dari 0 untuk melakukan payment.',
-            'debug'   => $debug,
+            'success'       => false,
+            'step'          => 'validate',
+            'rc'            => 'XV',
+            'message'       => 'Nominal transfer wajib diisi dan harus lebih dari 0 untuk melakukan payment.',
+            'snap_provider' => $snapProvider,
+            'debug'         => $debug,
         ];
     }
 
@@ -1490,11 +1502,12 @@ function paymentTransferBank(array $params, int $biayaAdmin = 0): array {
 
     if (!$tokenResult['success']) {
         return [
-            'success' => false,
-            'step'    => 'get_token',
-            'rc'      => 'XT',
-            'message' => 'Gagal mendapatkan token: ' . ($tokenResult['error'] ?? 'Unknown'),
-            'debug'   => $debug,
+            'success'       => false,
+            'step'          => 'get_token',
+            'rc'            => 'XT',
+            'message'       => 'Gagal mendapatkan token: ' . ($tokenResult['error'] ?? 'Unknown'),
+            'snap_provider' => $snapProvider,
+            'debug'         => $debug,
         ];
     }
     $accessToken = $tokenResult['token'];
@@ -1532,6 +1545,7 @@ function paymentTransferBank(array $params, int $biayaAdmin = 0): array {
         'biaya_admin'     => $biayaAdmin,
         'total_debet'     => $totalDebet ?: ($nominal + $biayaAdmin),
         'jenis_transfer'  => strtoupper($params['jenis_transfer'] ?? 'TFDANA'),
+        'snap_provider'   => $snapProvider,
         'beneficiary'     => [
             'account_no'   => preg_replace('/\D/', '', $params['nomor_rekening'] ?? ''),
             'account_name' => $params['beneficiary_name']  ?? '-',
@@ -1599,6 +1613,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'inqui
         'nama_bank'         => trim($_POST['nama_bank']         ?? ''),
         'nominal'           => trim($_POST['nominal']           ?? '0'),
         'jenis_transfer'    => strtoupper(trim($_POST['jenis_transfer'] ?? 'TFDANA')),
+        'snap_provider'     => strtolower(trim($_POST['snap_provider']  ?? 'permata')), // 'permata' | 'danamon'
     ];
 
     // Jika input kode bank manual diisi, gunakan sebagai kode numerik BI (DE103)
@@ -1650,6 +1665,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'payme
         'beneficiary_bank_code' => trim($_POST['beneficiary_bank_code'] ?? ''),
         'beneficiary_bank_name' => trim($_POST['beneficiary_bank_name'] ?? ''),
         'biaya_admin'         => (int)preg_replace('/\D/', '', $_POST['biaya_admin'] ?? '0'),
+        'snap_provider'       => strtolower(trim($_POST['snap_provider'] ?? 'permata')), // 'permata' | 'danamon'
     ];
 
     // Validasi wajib
@@ -2604,6 +2620,35 @@ DE061_SIM_SERIAL=</pre>
                         </div>
                     </div>
 
+                    <!-- SNAP Provider — hanya muncul saat BIFAST dipilih -->
+                    <div class="form-group" id="fieldSNAPProviderWrap" style="<?= ($formData['jenis_transfer'] ?? '') !== 'BIFAST' ? 'display:none;' : '' ?>">
+                        <label style="color:#1d4ed8;">⚡ SNAP Provider (Jalur Payment)</label>
+                        <?php $_snapProv = strtolower($formData['snap_provider'] ?? 'permata'); ?>
+                        <div style="display:flex;gap:20px;margin-top:4px;flex-wrap:wrap;">
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal;background:#eff6ff;border:1.5px solid #3b82f6;border-radius:7px;padding:7px 14px;">
+                                <input type="radio" name="snap_provider" value="permata"
+                                    <?= $snapProv ?? ($_snapProv === 'permata' ? 'checked' : '') ?>>
+                                <span>🏦 <strong>Permata SNAP</strong> <small style="color:#6b7280;">(default)</small></span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:normal;background:#fdf4ff;border:1.5px solid #a855f7;border-radius:7px;padding:7px 14px;" id="radioDanamonLabel">
+                                <input type="radio" name="snap_provider" value="danamon"
+                                    <?= ($_snapProv === 'danamon' ? 'checked' : '') ?>>
+                                <span>🏦 <strong>Danamon SNAP</strong> <small style="color:#9333ea;">(fallback jika Permata gagal)</small></span>
+                            </label>
+                        </div>
+                        <div class="field-hint" style="color:#7c3aed;margin-top:6px;" id="hintSNAPProvider">
+                            Routing ditentukan di CBS via <code>agen_fitur.PermataSNAPTF</code> /
+                            <code>DanamonSNAPTF</code>. ISO request identik — pilihan ini hanya untuk
+                            menandai jalur yang aktif dan menampilkan tip debug yang relevan.
+                        </div>
+                        <div id="warningDanamon" style="display:none;margin-top:8px;padding:8px 12px;background:#fdf4ff;border:1.5px solid #a855f7;border-radius:7px;font-size:.83rem;color:#6b21a8;">
+                            ⚠️ <strong>Danamon SNAP dipilih.</strong>
+                            Pastikan <code>agen_fitur.DanamonSNAPTF = '1'</code> sudah diset di production DB untuk agen ini.
+                            Jika belum diset, request akan tetap gagal DE039=03.
+                            <br><small>SQL: <code>UPDATE agen_fitur SET DanamonSNAPTF='1' WHERE KodeAgen='<?= htmlspecialchars(KODE_AGEN) ?>';</code></small>
+                        </div>
+                    </div>
+
                     <input type="hidden" name="nama_bank" id="namaBank"
                         value="<?= htmlspecialchars($formData['nama_bank'] ?? '') ?>">
 
@@ -2751,6 +2796,29 @@ DE061_SIM_SERIAL=</pre>
                             <span class="cs-label">Jenis Transfer</span>
                             <span class="cs-val"><?= htmlspecialchars($_jenisTF) ?></span>
                         </div>
+                        <?php if ($_jenisTF === 'BIFAST'): ?>
+                        <?php $_snapProvDisplay = strtolower($formData['snap_provider'] ?? 'permata'); ?>
+                        <div class="cs-row" style="<?= $_snapProvDisplay === 'danamon' ? 'background:#fdf4ff;border-radius:5px;' : '' ?>">
+                            <span class="cs-label">SNAP Provider</span>
+                            <span class="cs-val">
+                                <?php if ($_snapProvDisplay === 'danamon'): ?>
+                                    <span style="color:#7c3aed;font-weight:700;">🏦 Danamon SNAP</span>
+                                    <span style="font-size:.78rem;color:#9333ea;margin-left:6px;">(fallback)</span>
+                                <?php else: ?>
+                                    <span style="color:#1d4ed8;font-weight:700;">🏦 Permata SNAP</span>
+                                    <span style="font-size:.78rem;color:#6b7280;margin-left:6px;">(default)</span>
+                                <?php endif; ?>
+                            </span>
+                        </div>
+                        <?php if ($_snapProvDisplay === 'danamon'): ?>
+                        <div style="margin:6px 0 4px;padding:8px 12px;background:#fdf4ff;border:1.5px solid #a855f7;border-radius:7px;font-size:.82rem;color:#6b21a8;">
+                            ⚠️ <strong>Danamon SNAP dipilih.</strong>
+                            Pastikan <code>agen_fitur.DanamonSNAPTF = '1'</code> sudah diset di CBS untuk
+                            <strong><?= htmlspecialchars(KODE_AGEN) ?></strong> sebelum eksekusi.
+                            ISO request identik — routing ditentukan oleh konfigurasi CBS.
+                        </div>
+                        <?php endif; ?>
+                        <?php endif; ?>
                         <div class="cs-row">
                             <span class="cs-label">Nominal Transfer</span>
                             <span class="cs-val">Rp <?= number_format($_nominal, 0, ',', '.') ?></span>
@@ -2782,6 +2850,7 @@ DE061_SIM_SERIAL=</pre>
                         <input type="hidden" name="beneficiary_bank_code" value="<?= htmlspecialchars($_beneBankCode) ?>">
                         <input type="hidden" name="beneficiary_bank_name" value="<?= htmlspecialchars($_beneBank) ?>">
                         <input type="hidden" name="biaya_admin"          value="<?= htmlspecialchars((string)$_biayaAdmin) ?>">
+                        <input type="hidden" name="snap_provider"        value="<?= htmlspecialchars($formData['snap_provider'] ?? 'permata') ?>" id="hiddenSnapProvider">>
 
                         <div class="confirm-btn-row">
                             <button type="button" class="btn-cancel" onclick="document.getElementById('confirmBox').style.display='none'">
@@ -2984,6 +3053,19 @@ RAW Response:
                     <span class="pr-label">Jenis Transfer</span>
                     <span class="pr-val"><?= htmlspecialchars($paymentResult['jenis_transfer'] ?? '-') ?></span>
                 </div>
+                <?php if (strtoupper($paymentResult['jenis_transfer'] ?? '') === 'BIFAST'): ?>
+                <?php $_prSnap = strtolower($paymentResult['snap_provider'] ?? 'permata'); ?>
+                <div class="pr-row">
+                    <span class="pr-label">SNAP Provider</span>
+                    <span class="pr-val">
+                        <?php if ($_prSnap === 'danamon'): ?>
+                            <span style="color:#7c3aed;font-weight:600;">🏦 Danamon SNAP</span>
+                        <?php else: ?>
+                            <span style="color:#1d4ed8;font-weight:600;">🏦 Permata SNAP</span>
+                        <?php endif; ?>
+                    </span>
+                </div>
+                <?php endif; ?>
                 <div class="pr-row">
                     <span class="pr-label">Nominal Transfer</span>
                     <span class="pr-val">Rp <?= number_format($paymentResult['nominal'] ?? 0, 0, ',', '.') ?></span>
@@ -3062,8 +3144,23 @@ RAW Response:
                     <?php
                     // Petunjuk spesifik untuk RC umum
                     $tip = '';
-                    if ($_fRC === '03') $tip = '💡 RC=03: Bank tujuan menolak transaksi ini. Kemungkinan rekening tujuan tidak aktif, fitur transfer masuk tidak diizinkan, atau ada pembatasan dari bank tujuan. Hubungi bank tujuan.';
-                    elseif ($_fRC === '51') $tip = '💡 RC=51: Saldo rekening sumber tidak mencukupi.';
+                    $_fSnapProv = strtolower($paymentResult['snap_provider'] ?? 'permata');
+                    $_fJenisTF  = strtoupper($paymentResult['jenis_transfer'] ?? '');
+                    if ($_fRC === '03') {
+                        if ($_fJenisTF === 'BIFAST' && $_fSnapProv === 'permata') {
+                            $tip = '💡 RC=03 (BIFAST via Permata SNAP): Server menolak — kemungkinan agen_fitur.PermataSNAPTF belum diset "1" untuk ' . htmlspecialchars(KODE_AGEN) . '. '
+                                 . 'SQL diagnosis: SELECT KodeAgen, PermataSNAPTF FROM agen_fitur WHERE KodeAgen="' . htmlspecialchars(KODE_AGEN) . '"; '
+                                 . '→ Jika kosong/"0": UPDATE agen_fitur SET PermataSNAPTF="1" WHERE KodeAgen="' . htmlspecialchars(KODE_AGEN) . '"; '
+                                 . '→ Atau coba beralih ke SNAP Provider: Danamon (pilih Danamon di form, lalu atur DanamonSNAPTF="1" di CBS).';
+                        } elseif ($_fJenisTF === 'BIFAST' && $_fSnapProv === 'danamon') {
+                            $tip = '💡 RC=03 (BIFAST via Danamon SNAP): Server menolak — kemungkinan agen_fitur.DanamonSNAPTF belum diset "1" untuk ' . htmlspecialchars(KODE_AGEN) . '. '
+                                 . 'SQL diagnosis: SELECT KodeAgen, DanamonSNAPTF FROM agen_fitur WHERE KodeAgen="' . htmlspecialchars(KODE_AGEN) . '"; '
+                                 . '→ Jika kosong/"0": UPDATE agen_fitur SET DanamonSNAPTF="1" WHERE KodeAgen="' . htmlspecialchars(KODE_AGEN) . '"; '
+                                 . '→ Sudah coba Permata? Jika Permata juga gagal, cek apakah service BIFAST aktif di CBS untuk agen ini.';
+                        } else {
+                            $tip = '💡 RC=03: Bank tujuan menolak transaksi ini. Kemungkinan rekening tujuan tidak aktif, fitur transfer masuk tidak diizinkan, atau ada pembatasan dari bank tujuan.';
+                        }
+                    } elseif ($_fRC === '51') $tip = '💡 RC=51: Saldo rekening sumber tidak mencukupi.';
                     elseif ($_fRC === '14') $tip = '💡 RC=14: Nomor rekening tujuan tidak valid atau tidak terdaftar di bank tujuan.';
                     elseif ($_fRC === '91') $tip = '💡 RC=91: Sistem bank tujuan sedang tidak dapat dihubungi. Coba beberapa menit lagi.';
                     elseif ($_fRC === '96') $tip = '💡 RC=96: System malfunction. Coba ulang transaksi.';
@@ -3127,7 +3224,7 @@ RAW Response:
     <?php endif; ?>
 
     <div class="footer">
-        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.43 &mdash;
+        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.44 &mdash;
         PHP <?= PHP_VERSION ?> &mdash; <?= SNow() ?> WIB
     </div>
 
@@ -3162,7 +3259,7 @@ document.getElementById('kodeBankManual').addEventListener('input', function() {
     }
 });
 
-// Tampil/sembunyikan field KodeBIFAST sesuai jenis transfer
+// Tampil/sembunyikan field KodeBIFAST dan SNAP Provider sesuai jenis transfer
 function handleJenisTransferChange() {
     const radios  = document.querySelectorAll('input[name="jenis_transfer"]');
     let jenis = 'TFDANA';
@@ -3170,7 +3267,27 @@ function handleJenisTransferChange() {
     const isBIFAST = (jenis === 'BIFAST');
     document.getElementById('fieldBIFASTWrap').style.display = isBIFAST ? '' : 'none';
     document.getElementById('fieldDE048Wrap').style.display  = isBIFAST ? 'none' : '';
+    const provWrap = document.getElementById('fieldSNAPProviderWrap');
+    if (provWrap) provWrap.style.display = isBIFAST ? '' : 'none';
 }
+
+// Toggle warning Danamon saat radio SNAP provider berubah
+(function() {
+    function updateDanamonWarning() {
+        const radios  = document.querySelectorAll('input[name="snap_provider"]');
+        let prov = 'permata';
+        radios.forEach(r => { if (r.checked) prov = r.value; });
+        const warn = document.getElementById('warningDanamon');
+        const label = document.getElementById('radioDanamonLabel');
+        if (warn)  warn.style.display  = (prov === 'danamon') ? '' : 'none';
+        if (label) label.style.borderColor = (prov === 'danamon') ? '#7c3aed' : '#a855f7';
+        if (label) label.style.background  = (prov === 'danamon') ? '#ede9fe' : '#fdf4ff';
+    }
+    document.addEventListener('change', function(e) {
+        if (e.target && e.target.name === 'snap_provider') updateDanamonWarning();
+    });
+    updateDanamonWarning(); // jalankan saat load
+})();
 
 // Validasi real-time KodeBIFAST — tampilkan warning jika isi masih berupa angka
 (function() {

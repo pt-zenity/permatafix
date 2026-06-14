@@ -6,7 +6,7 @@ Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Tran
 
 | File | Keterangan |
 |------|------------|
-| `tf.php` | Script PHP single-file untuk testing inquiry & payment transfer bank melalui jalur Permata SNAP — **v1.6.43** |
+| `tf.php` | Script PHP single-file untuk testing inquiry & payment transfer bank — **v1.6.44** (dual-provider: Permata SNAP + Danamon SNAP fallback) |
 | `mbanking.controller.php` | Controller mBanking — fix PHP Notice "Undefined index: KT" (line 111) |
 
 ---
@@ -28,6 +28,91 @@ $cKT = isset($vaRequest['KT']) ? $vaRequest['KT'] : '';  // fix: isset() guard, 
 ```
 
 > **Catatan**: Fix ini hanya menghilangkan PHP Notice dari log. Tidak mempengaruhi alur transaksi karena `$lWeird` di-force `false` di line 121.
+
+---
+
+## Perubahan tf.php — v1.6.44 (sesi 5B — Danamon SNAP fallback)
+
+### Latar Belakang
+
+Setelah v1.6.43, DE048 sudah benar (`PAYBIFAST~~CENAIDJA*0` ✅), namun CBS masih mengembalikan **DE039=03** karena `agen_fitur.PermataSNAPTF` untuk A-000268 kemungkinan belum bernilai `'1'`.
+
+**Temuan kritis dari analisis source code CBS:**
+- ISO 8583 request untuk PAYBIFAST **identik** antara jalur Permata dan Danamon
+- Routing provider (Permata vs Danamon) ditentukan sepenuhnya oleh `agen_fitur.PermataSNAPTF / DanamonSNAPTF` di **CBS layer** — bukan oleh isi ISO payload
+- `SNAPDanamon.mod.php` hanya memiliki `inquiry()` + `receiver()` — **tidak ada payment endpoint**
+- `DanamonDispatcher.mod.php` line 22: `return ['status'=>'fallback']` (circuit breaker placeholder, selalu fallback ke jalur API lama)
+
+**Implikasi arsitektur**: tf.php tidak bisa mem-"force" routing ke Danamon secara langsung. Yang bisa dilakukan adalah:
+1. Tampilkan pilihan provider di UI (Permata/Danamon)
+2. Teruskan nilai `snap_provider` ke debug output + tips
+3. Berikan SQL guidance yang relevan berdasarkan provider yang dipilih pengguna
+
+### Perubahan v1.6.44
+
+| # | Perubahan | File/Fungsi |
+|---|-----------|-------------|
+| 1 | **Docblock header** — tambah keterangan BIFAST dual-provider (Permata default, Danamon fallback) | `tf.php` header |
+| 2 | **Inquiry POST handler** — tambah field `snap_provider` ke `$formData` | `// HANDLE POST REQUEST` |
+| 3 | **Payment POST handler** — tambah field `snap_provider` ke `$paymentFormData` | Payment handler |
+| 4 | **`paymentTransferBank()`** — tambah `$snapProvider` variable + key `snap_provider` di return array | `paymentTransferBank()` |
+| 5 | **`buildISO8583PaymentRequest()`** — tambah `_snap_provider` di return (info debug saja, tidak masuk ISO) | `buildISO8583PaymentRequest()` |
+| 6 | **UI Form** — radio buttons SNAP Provider (Permata/Danamon) + warning Danamon kondisional | HTML form, `#fieldSNAPProviderWrap` |
+| 7 | **Confirm box** — baris "SNAP Provider" + warning Danamon jika dipilih | Konfirmasi sebelum bayar |
+| 8 | **Hidden field payment form** — `<input type="hidden" name="snap_provider">` | Payment submit form |
+| 9 | **Payment result success** — baris "SNAP Provider" di detail hasil transaksi | Result display |
+| 10 | **RC=03 tip context-aware** — tip berbeda berdasarkan `snap_provider` + `jenis_transfer` | `rcDescription()` / RC tip section |
+| 11 | **JS `handleJenisTransferChange()`** — toggle `#fieldSNAPProviderWrap` saat jenis TF berubah | JavaScript |
+| 12 | **JS IIFE `updateDanamonWarning()`** — toggle warning + border Danamon saat radio berubah | JavaScript |
+
+### Cara Kerja UI Dual-Provider
+
+```
+Form BIFAST:
+  ┌─────────────────────────────────────────────────────┐
+  │ ⚡ SNAP Provider (Jalur Payment)                     │
+  │  ○ 🏦 Permata SNAP (default)                        │
+  │  ○ 🏦 Danamon SNAP (fallback jika Permata gagal)    │
+  │                                                     │
+  │ [Jika Danamon dipilih, muncul warning:]             │
+  │ ⚠️ Danamon SNAP dipilih. Pastikan                   │
+  │    agen_fitur.DanamonSNAPTF = '1' di CBS            │
+  │    SQL: UPDATE agen_fitur SET DanamonSNAPTF='1'     │
+  │         WHERE KodeAgen='A-000268';                  │
+  └─────────────────────────────────────────────────────┘
+```
+
+**Alur teknis saat memilih Danamon:**
+```
+User pilih "Danamon SNAP" di UI
+  → snap_provider = 'danamon' di-POST ke payment handler
+  → paymentTransferBank() menerima $snapProvider = 'danamon'
+  → buildISO8583PaymentRequest() menyertakan _snap_provider = 'danamon' (debug saja)
+  → ISO 8583 dikirim ke CBS (payload IDENTIK dengan Permata)
+  → CBS membaca agen_fitur.DanamonSNAPTF untuk routing
+  → Jika DanamonSNAPTF='1': CBS route ke Danamon SNAP API ✅
+  → Jika DanamonSNAPTF≠'1': CBS kembalikan DE039=03 + tip SQL DanamonSNAPTF
+```
+
+### RC=03 Context-Aware Tips (v1.6.44)
+
+| Kondisi | Tip yang Ditampilkan |
+|---------|---------------------|
+| BIFAST + Permata SNAP + RC=03 | Cek `PermataSNAPTF='1'` di `agen_fitur` + SQL fix + saran beralih ke Danamon |
+| BIFAST + Danamon SNAP + RC=03 | Cek `DanamonSNAPTF='1'` di `agen_fitur` + SQL fix |
+| Non-BIFAST + RC=03 | Tip generik "Invalid Merchant/Expired" |
+
+### SQL untuk Danamon SNAP
+
+```sql
+-- Aktifkan Danamon SNAP untuk agen:
+UPDATE agen_fitur SET DanamonSNAPTF = '1' WHERE KodeAgen = 'A-000268';
+
+-- Cek status kedua provider sekaligus:
+SELECT KodeAgen, PermataSNAPTF, DanamonSNAPTF
+FROM agen_fitur
+WHERE KodeAgen = 'A-000268';
+```
 
 ---
 
