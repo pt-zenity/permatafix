@@ -514,14 +514,18 @@ if (empty($_oauthTokenPrivate) && !empty($_BPR_ENV['OAUTH_TOKEN_PRIVATE'])) $_oa
 if (empty($_oauthSertifikat)    && !empty($_BPR_ENV['OAUTH_SERTIFIKAT']))    $_oauthSertifikat   = $_BPR_ENV['OAUTH_SERTIFIKAT'];
 if (empty($_oauthKodeAplikasi) && !empty($_BPR_ENV['OAUTH_KODE_APLIKASI'])) $_oauthKodeAplikasi = $_BPR_ENV['OAUTH_KODE_APLIKASI'];
 if (empty($_de061)             && !empty($_BPR_ENV['DE061_SIM_SERIAL']))     $_de061             = $_BPR_ENV['DE061_SIM_SERIAL'];
-// Sumber 3: hardcoded defaults dari config A-000300
-// msAuth_SERTIFIKAT_API = d9ebe47971b415daadc3440ee4070aea
-// msAuth_VERSI_SERTIFIKAT_API = 1.2.6
-// msCDSID = babba586c65c1a8119cfe6a6dae9972f (DE061_SIM_SERIAL / DEVICEID)
+// Sumber 3: hardcoded defaults dari config.sql A-000300
+// msAuth_ACCESSTOKEN_API    = 15c1e0a4ec4a4a96d29bcfc809d280a8  → OAUTH_CLIENT_ID
+// msAuth_REFRESHTOKEN_API   = 7bd947a413e1312ed7231bd2d6421588  → OAUTH_CLIENT_SECRET
+// msAuth_SERTIFIKAT_API     = d9ebe47971b415daadc3440ee4070aea  → OAUTH_SERTIFIKAT
+// msAuth_VERSI_SERTIFIKAT_API = 1.2.6                           → versi aplikasi
+// msCDSID                   = babba586c65c1a8119cfe6a6dae9972f  → DE061_SIM_SERIAL / DEVICEID
 // Digunakan jika .assist.env tidak ada DAN assist-bpr.net/env tidak mengandung nilai ini
+if (empty($_oauthClientId))     $_oauthClientId     = '15c1e0a4ec4a4a96d29bcfc809d280a8'; // msAuth_ACCESSTOKEN_API
+if (empty($_oauthClientSecret)) $_oauthClientSecret = '7bd947a413e1312ed7231bd2d6421588'; // msAuth_REFRESHTOKEN_API
 if (empty($_oauthSertifikat))   $_oauthSertifikat   = 'd9ebe47971b415daadc3440ee4070aea'; // msAuth_SERTIFIKAT_API
-if (empty($_oauthKodeAplikasi)) $_oauthKodeAplikasi = 'BPRPAS';                              // KodeAplikasi A-000300
-if (empty($_de061))             $_de061             = 'babba586c65c1a8119cfe6a6dae9972f';  // msCDSID
+if (empty($_oauthKodeAplikasi)) $_oauthKodeAplikasi = 'BPRPAS';                            // KodeAplikasi A-000300
+if (empty($_de061))             $_de061             = 'babba586c65c1a8119cfe6a6dae9972f'; // msCDSID
 
 $_envFile = !empty($_oauthSource) && str_contains($_oauthSource, 'bpr')
     ? ($_BPR_ENV['_env_file'] ?? ($_ASSIST_ENV['_env_file'] ?? ''))
