@@ -9,6 +9,106 @@ Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Tran
 | `tf.php` | Script PHP single-file untuk testing inquiry & payment transfer bank — **v1.6.45** (zero-pad kode bank numerik fix) |
 | `mbanking.controller.php` | Controller mBanking — fix PHP Notice "Undefined index: KT" (line 111) |
 | `mbanking_del.php` | Script PHP single-file deaktivasi user mBanking — MTI=009/KT=51, A-000300 |
+| `hapusaktivasimbanking.php` | Script PHP single-file hapus aktivasi user mBanking — MTI=009/KT=51, warning banner + confirm 2 field |
+
+---
+
+## hapusaktivasimbanking.php — Hapus Aktivasi User mBanking (sesi 5C)
+
+Script PHP **single-file** untuk menghapus aktivasi user mBanking via CBS.
+Menggunakan jalur ISO 8583 MTI=009/KT=51 — identik dengan `mbanking_del.php` namun
+dengan UI berbeda: warning banner permanen + konfirmasi 2-field (HP + Kode Agen).
+
+### Perbedaan dengan mbanking_del.php
+
+| Aspek | `mbanking_del.php` | `hapusaktivasimbanking.php` |
+|-------|--------------------|-----------------------------|
+| Fungsi utama | `sendMBankingDEL()` | `hapusAktivasiMBanking()` |
+| Cache token | `mbanking_del_token.cache` | `hapus_aktifasi_token.cache` |
+| Warna UI | Indigo (`#6366f1`) | Red (`#ef4444`) |
+| Confirm dialog | HP saja | HP + Kode Agen |
+| Warning banner | Tidak ada | ⚠️ Amber — peringatan aksi permanen |
+
+### Flow Teknis
+
+```
+hapusaktivasimbanking.php
+  Step 1 → GET OAuth token (http://myassist.sis1.net/assist-auth_api/...)
+            Cache ke storage/cds/cache/hapus_aktifasi_token.cache
+  Step 2 → Bangun ISO 8583 request:
+            MTI  = 009           (DIGITAL_BANK_REGISTER)
+            KT   = 51            (TRX_MB_DEAKTIVASI_FROM_CORE)
+            AGEN = A-000300
+            MSG  = CS#{faktur}#mBankingDEL#{noHP}#{kodeAgen}
+  Step 3 → POST ke http://switching.mcoll.sis1.net/.../mobile-digital
+            Authorization: Bearer {access_token}
+            cCode = JSON ISO request
+  Step 4 → Parse response CBS:
+            AR#{faktur}#SUKSES#User telah dinonaktifkan  ✅
+            AR#{faktur}#GAGAL#{pesan error}              ❌
+
+CBS handler (mbanking.controller.php):
+  MTI=009 + KT=51 → Unregister()
+    → SELECT agen_aktifasi WHERE HP + Agen
+    → DELETE agen_smsbanking WHERE Nomor=HP AND Agen
+    → DELETE agen_aktifasi   WHERE HP=KodeNegara(HP) AND Agen
+```
+
+### Konfigurasi A-000300
+
+| Konstanta | Nilai | Sumber |
+|-----------|-------|--------|
+| `OAUTH_CLIENT_ID` | `000087` | `assist-bpr.net/env/` (auth_client_id) |
+| `OAUTH_CLIENT_SECRET` | `274FrdhikpazQXdLtv5kNoRucN7SlQPq` | `assist-bpr.net/env/` |
+| `OAUTH_CORPORATE_ID` | `553231` | `assist-bpr.net/env/` |
+| `OAUTH_SERTIFIKAT` | `d9ebe47971b415daadc3440ee4070aea` | config.sql (msAuth_SERTIFIKAT_API) |
+| `OAUTH_KODE_APLIKASI` | `BPRPAS` | config.sql |
+| `OAUTH_USERNAME` | `A-000300` | config.sql (msKodeH2H) |
+| `DE061_SIM_SERIAL` | `babba586c65c1a8119cfe6a6dae9972f` | config.sql (msCDSID) |
+| `KODE_AGEN` | `A-000300` | — |
+| `TOKEN_CACHE_FILE` | `storage/cds/cache/hapus_aktifasi_token.cache` | Terpisah dari mbanking_del.php |
+
+> **Catatan `OAUTH_PASSWORD`**: Masih kosong string — isi dari tabel `agen` kolom password H2H jika OAuth server memerlukannya.
+
+### Penggunaan
+
+1. Upload `hapusaktivasimbanking.php` ke web server (direktori yang sama dengan `mbanking_del.php`)
+2. Buka di browser: `http://server/hapusaktivasimbanking.php`
+3. Baca **warning banner merah** — aksi ini **permanen** (tidak bisa di-undo)
+4. Isi **Nomor HP** (format `08xxxxxxxxxx`) + **Kode Agen** (default A-000300)
+5. Klik **Hapus Aktivasi mBanking** → konfirmasi JS tampilkan HP + Kode Agen → kirim ke CBS
+6. Lihat hasil 4-step debug:
+   - Step 1: status token (cache / baru)
+   - Step 2: ISO request (MTI/KT/MSG)
+   - Step 3: HTTP POST ke CBS (kode + elapsed ms)
+   - Step 4: response CBS (SUKSES/GAGAL + raw JSON)
+
+### Struktur File
+
+```php
+hapusaktivasimbanking.php
+  ├── KONFIGURASI (define A-000300)
+  ├── generateFaktur()            — nomor faktur unik timestamp+random
+  ├── getAccessToken()            — OAuth + file cache (robust: BOM strip, PascalCase, error diagnostik)
+  ├── hapusAktivasiMBanking()    — bangun ISO + POST + parse response
+  ├── HANDLE POST REQUEST         — validasi form + call hapusAktivasiMBanking()
+  └── HTML OUTPUT                 — warning banner + form + 4-step result display (Tailwind CSS)
+```
+
+### getAccessToken() — Token Extraction Chain (identik mbanking_del.php v42d36d3)
+
+```php
+// 6 path — support semua format OAuth server:
+$token = $resp['data']['access_token']   // Format A (lowercase standar)
+      ?? $resp['access_token']            // Format A (flat)
+      ?? $resp['Data']['AccessToken']     // Format B (PascalCase — myassist.sis1.net)
+      ?? $resp['Data']['Token']           // Format B (alt key)
+      ?? $resp['data']['Token']           // Format C (mixed)
+      ?? $resp['Token'];                  // Format C (flat)
+
+// LifeTime dalam menit (myassist) vs detik (standar):
+// Jika expiresRaw ≤ 1440 → dianggap menit → × 60
+```
 
 ---
 
