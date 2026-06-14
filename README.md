@@ -8,6 +8,76 @@ Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Tran
 |------|------------|
 | `tf.php` | Script PHP single-file untuk testing inquiry & payment transfer bank — **v1.6.44** (dual-provider: Permata SNAP + Danamon SNAP fallback) |
 | `mbanking.controller.php` | Controller mBanking — fix PHP Notice "Undefined index: KT" (line 111) |
+| `mbanking_del.php` | Script PHP single-file deaktivasi user mBanking — MTI=009/KT=51, A-000300 |
+
+---
+
+## mbanking_del.php — Deaktivasi User mBanking (sesi 5B)
+
+Script PHP **single-file** untuk menonaktifkan user mBanking via CBS.
+Menggunakan jalur ISO 8583 MTI=009/KT=51 ke `assist-switching_v3_pro`.
+
+### Flow Teknis
+
+```
+mbanking_del.php
+  Step 1 → GET OAuth token (http://myassist.sis1.net/assist-auth_api/...)
+            Token di-cache ke storage/cds/cache/mbanking_del_token.cache
+  Step 2 → Bangun ISO 8583 request:
+            MTI  = 009           (DIGITAL_BANK_REGISTER)
+            KT   = 51            (TRX_MB_DEAKTIVASI_FROM_CORE)
+            AGEN = A-000300
+            MSG  = CS#{faktur}#mBankingDEL#{noHP}#{kodeAgen}
+  Step 3 → POST ke http://switching.mcoll.sis1.net/.../mobile-digital
+            Authorization: Bearer {access_token}
+            cCode = JSON ISO request
+  Step 4 → Parse response CBS:
+            AR#{faktur}#SUKSES#User telah dinonaktifkan  ✅
+            AR#{faktur}#GAGAL#{pesan error}              ❌
+
+CBS handler (mbanking.controller.php):
+  MTI=009 + KT=51 → Unregister()
+    → DELETE agen_smsbanking WHERE HP = {noHP} AND KodeAgen = {agen}
+    → DELETE agen_aktifasi   WHERE HP = {noHP} AND KodeAgen = {agen}
+```
+
+### Konfigurasi A-000300
+
+| Konstanta | Nilai | Sumber |
+|-----------|-------|--------|
+| `OAUTH_CLIENT_ID` | `000087` | `assist-bpr.net/env/` (auth_client_id) |
+| `OAUTH_CLIENT_SECRET` | `274FrdhikpazQXdLtv5kNoRucN7SlQPq` | `assist-bpr.net/env/` |
+| `OAUTH_CORPORATE_ID` | `553231` | `assist-bpr.net/env/` |
+| `OAUTH_SERTIFIKAT` | `d9ebe47971b415daadc3440ee4070aea` | `config.sql` (msAuth_SERTIFIKAT_API) |
+| `OAUTH_KODE_APLIKASI` | `BPRPAS` | config.sql |
+| `OAUTH_USERNAME` | `A-000300` | config.sql (msKodeH2H) |
+| `DE061_SIM_SERIAL` | `babba586c65c1a8119cfe6a6dae9972f` | config.sql (msCDSID) |
+| `KODE_AGEN` | `A-000300` | — |
+
+> **Catatan `OAUTH_PASSWORD`**: Masih kosong string — perlu diisi dari tabel `agen` kolom password H2H jika OAuth server memerlukannya.
+
+### Penggunaan
+
+1. Upload `mbanking_del.php` ke web server (direktori yang sama dengan `tf.php`)
+2. Buka di browser: `http://server/mbanking_del.php`
+3. Isi **Nomor HP** (format `08xxxxxxxxxx`) + **Kode Agen** (default sudah A-000300)
+4. Klik **Nonaktifkan User mBanking** → konfirmasi JS → kirim ke CBS
+5. Lihat hasil 4-step debug:
+   - Step 1: status token (cache / baru)
+   - Step 2: ISO request (MTI/KT/MSG)
+   - Step 3: HTTP POST ke CBS (kode + elapsed ms)
+   - Step 4: response CBS (SUKSES/GAGAL + raw JSON)
+
+### Struktur File
+
+```php
+mbanking_del.php
+  ├── KONFIGURASI (define A-000300)
+  ├── getAccessToken()     — OAuth + file cache
+  ├── sendMBankingDEL()   — bangun ISO + POST + parse
+  ├── HANDLE POST REQUEST  — validasi form + call sendMBankingDEL()
+  └── HTML OUTPUT          — form + 4-step result display (Tailwind CSS)
+```
 
 ---
 
