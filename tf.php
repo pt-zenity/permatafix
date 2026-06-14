@@ -1249,15 +1249,15 @@ function buildISO8583PaymentRequest(array $params, string $accessToken, int $bia
     ];
 
     return [
-        'MTI' => '200',        // DIGITAL_BANK (payment/debet)
-        'MSG' => $msg,
+        'MTI' => '002',        // DIGITAL_BANK — ReadRequest() hanya mengenal "002" untuk payment
+        'MSG' => $msg,         // MTI "200" tidak ada handler-nya → jatuh ke else → "Request salah!!"
     ];
 }
 
 /**
  * sendPaymentRequest — kirim request payment ke switching (/mobile-digital)
  *
- * Sama persis dengan sendInquiryRequest, hanya isoRequest berbeda (MTI=200).
+ * Sama persis dengan sendInquiryRequest, hanya isoRequest berbeda (MTI=002).
  * Switching meneruskan ke CBS; CBS yang eksekusi transfer via Permata SNAP.
  */
 function sendPaymentRequest(array $isoRequest, string $accessToken): array {
