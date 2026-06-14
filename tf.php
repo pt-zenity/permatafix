@@ -856,8 +856,11 @@ function buildISO8583Request(array $params, string $accessToken): array {
     // DE012: HHmm (jam:menit sekarang)
     $de012 = date('Hi');
 
-    // DE013: MMDD (bulan:tanggal) — sesuai source controller: date("md") BUKAN date("dm")
-    $de013 = date('md');  // bulan-hari, bukan hari-bulan
+    // DE013: MMDD (bulan:tanggal) — sesuai source controller: date("md")
+    // CATATAN: response dari server menggunakan DDMM (mis. "1406" = hari14 bulan06),
+    // tetapi REQUEST ke switching tetap pakai MMDD (mis. "0614") sesuai source controller.
+    // Inkonsistensi ini ada di sisi server; kita mengikuti format pengiriman controller.
+    $de013 = date('md');  // MMDD: bulan dulu, lalu hari
 
     // DE037: retrieval reference number 12 digit (nomor unik transaksi)
     $de037 = date('His') . str_pad((string)mt_rand(1, 999999), 6, '0', STR_PAD_LEFT);
@@ -971,6 +974,22 @@ function parseISO8583Response(array $httpResult): array {
     $raw  = $httpResult['raw'] ?? '';
     $data = $httpResult['data'] ?? [];
 
+    // ── Langkah 0: strip PHP Notice/Warning HTML sebelum JSON ────
+    // Server prod kadang masih menghasilkan PHP Notice di output (mis. "Undefined index: KT")
+    // yang muncul sebagai "<br />\n<b>Notice</b>:..." SEBELUM JSON string.
+    // json_decode() PHP akan return null jika ada konten non-JSON di awal string.
+    // Fix: cari posisi '{' pertama, potong semua konten sebelumnya.
+    if (empty($data) && !empty($raw)) {
+        $jsonStart = strpos($raw, '{');
+        if ($jsonStart !== false) {
+            $cleanRaw = substr($raw, $jsonStart);
+            $decoded  = json_decode($cleanRaw, true);
+            if (is_array($decoded)) {
+                $data = $decoded;
+            }
+        }
+    }
+
     // ── Langkah 1: unwrap outer JSON wrapper dari switching ──────
     // Switching mengembalikan: {"status":true,"response_code":200,"data":"...", ...}
     // Field "data" berisi JSON string ISO array — perlu di-decode sekali lagi
@@ -1070,18 +1089,39 @@ function inquiryTransferBank(array $params): array {
 
     $success = in_array($rc, ['00', '19'], true);
 
-    // Parse nama pemilik rekening dari tagihan (format Assist: "NamaBank|NamaRekening|..." atau string langsung)
+    // Parse nama pemilik rekening dari tagihan
+    // Format DE048 response TFDANA/LLG/RTGS (dari Permata SNAP via switching):
+    //   "NoRek|NamaPemilik|KodeBankBI|NamaBank"
+    //   parts[0] = nomor rekening konfirmasi
+    //   parts[1] = nama pemilik rekening (BENEFICIARY NAME)
+    //   parts[2] = kode bank BI (mis. "014" = BCA)
+    //   parts[3] = nama bank singkat (mis. "BCA")
+    // Contoh: "5465389271|FLIPTECH LENTERA IP PT|014|BCA"
     $beneficiaryName = '-';
     $beneficiaryNo   = $params['nomor_rekening'] ?? '';
+    $beneficiaryBankNameFromDE048 = '';
+    $beneficiaryBankCodeFromDE048 = '';
     if (!empty($tagihan)) {
         $parts = explode('|', $tagihan);
-        if (count($parts) >= 2) {
-            $beneficiaryName = $parts[1] ?? '-';
-            $beneficiaryNo   = $parts[0] ?? $beneficiaryNo;
+        if (count($parts) >= 4) {
+            // Format lengkap: NoRek|NamaPemilik|KodeBI|NamaBank
+            $beneficiaryNo               = $parts[0] !== '' ? $parts[0] : $beneficiaryNo;
+            $beneficiaryName             = $parts[1] !== '' ? $parts[1] : '-';
+            $beneficiaryBankCodeFromDE048 = $parts[2] ?? '';  // kode BI, mis. "014"
+            $beneficiaryBankNameFromDE048 = $parts[3] ?? '';  // nama bank, mis. "BCA"
+        } elseif (count($parts) >= 2) {
+            // Format pendek: NoRek|NamaPemilik
+            $beneficiaryNo   = $parts[0] !== '' ? $parts[0] : $beneficiaryNo;
+            $beneficiaryName = $parts[1] !== '' ? $parts[1] : '-';
         } elseif (count($parts) === 1 && strlen($tagihan) > 5) {
+            // String nama langsung (tanpa pipe)
             $beneficiaryName = $tagihan;
         }
     }
+
+    // Gunakan bank name/code dari DE048 response jika lebih akurat dari input form
+    $bankCode = $beneficiaryBankCodeFromDE048 ?: ($params['kode_bank'] ?? '');
+    $bankName = $beneficiaryBankNameFromDE048 ?: ($params['nama_bank'] ?? '');
 
     return [
         'success'         => $success,
@@ -1091,8 +1131,8 @@ function inquiryTransferBank(array $params): array {
         'beneficiary'     => [
             'account_no'   => $beneficiaryNo,
             'account_name' => $beneficiaryName,
-            'bank_code'    => $params['kode_bank']  ?? '',
-            'bank_name'    => $params['nama_bank']  ?? '',
+            'bank_code'    => $bankCode,
+            'bank_name'    => $bankName,
         ],
         'biaya_admin'     => $biayaAdmin,
         'jenis_transfer'  => strtoupper($params['jenis_transfer'] ?? 'TFDANA'),
