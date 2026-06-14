@@ -24,8 +24,8 @@
  *      1. File .assist.env (format KEY=VALUE):
  *           OAUTH_CLIENT_ID=xxxx
  *           OAUTH_CLIENT_SECRET=xxxx
- *           OAUTH_USERNAME=xxxx       ← UserH2H di tabel agen
- *           OAUTH_PASSWORD=xxxx
+ *           OAUTH_USERNAME=xxxx       ← UserH2H di tabel agen (default: bpr_pas untuk A-000300)
+ *           OAUTH_PASSWORD=xxxx       ← opsional jika tidak ada password H2H
  *           DE061_SIM_SERIAL=xxxx     ← opsional, override auto-detect
  *      2. assist-bpr.net/env/{kode}_.env (format key = value, spasi sekitar =):
  *           auth_client_id = xxxx     → OAUTH_CLIENT_ID
@@ -520,12 +520,14 @@ if (empty($_de061)             && !empty($_BPR_ENV['DE061_SIM_SERIAL']))     $_d
 // msAuth_SERTIFIKAT_API     = d9ebe47971b415daadc3440ee4070aea  → OAUTH_SERTIFIKAT
 // msAuth_VERSI_SERTIFIKAT_API = 1.2.6                           → versi aplikasi
 // msCDSID                   = babba586c65c1a8119cfe6a6dae9972f  → DE061_SIM_SERIAL / DEVICEID
+// KodeAgentCBS              = bpr_pas                           → OAUTH_USERNAME (UserH2H)
 // Digunakan jika .assist.env tidak ada DAN assist-bpr.net/env tidak mengandung nilai ini
 if (empty($_oauthClientId))     $_oauthClientId     = '15c1e0a4ec4a4a96d29bcfc809d280a8'; // msAuth_ACCESSTOKEN_API
 if (empty($_oauthClientSecret)) $_oauthClientSecret = '7bd947a413e1312ed7231bd2d6421588'; // msAuth_REFRESHTOKEN_API
 if (empty($_oauthSertifikat))   $_oauthSertifikat   = 'd9ebe47971b415daadc3440ee4070aea'; // msAuth_SERTIFIKAT_API
 if (empty($_oauthKodeAplikasi)) $_oauthKodeAplikasi = 'BPRPAS';                            // KodeAplikasi A-000300
 if (empty($_de061))             $_de061             = 'babba586c65c1a8119cfe6a6dae9972f'; // msCDSID
+if (empty($_oauthUsername))     $_oauthUsername     = 'bpr_pas';                           // KodeAgentCBS A-000300
 
 $_envFile = !empty($_oauthSource) && str_contains($_oauthSource, 'bpr')
     ? ($_BPR_ENV['_env_file'] ?? ($_ASSIST_ENV['_env_file'] ?? ''))
@@ -1645,7 +1647,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'inqui
     } elseif (KODE_AGEN === '') {
         $errorMessage = '⚠️ KODE_AGEN tidak terdeteksi! Pastikan ada file cache snap_tf_bank_permata.cache di storage/cds/cache/ dalam direktori assist-switching_v3_pro.';
     } elseif (OAUTH_CLIENT_ID === '' && OAUTH_USERNAME === '') {
-        $errorMessage = '⚠️ Kredensial OAuth belum dikonfigurasi! Buat file .assist.env dengan isi: OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_USERNAME, OAUTH_PASSWORD.';
+        $errorMessage = '⚠️ Kredensial OAuth belum dikonfigurasi! Pastikan Sumber 3 hardcoded sudah terisi atau buat file .assist.env.';
     } else {
         $result = inquiryTransferBank($formData);
     }
@@ -1697,7 +1699,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'payme
     } elseif (KODE_AGEN === '') {
         $paymentError = '⚠️ KODE_AGEN tidak terdeteksi!';
     } elseif (OAUTH_CLIENT_ID === '' && OAUTH_USERNAME === '') {
-        $paymentError = '⚠️ Kredensial OAuth belum dikonfigurasi!';
+        $paymentError = '⚠️ Kredensial OAuth belum dikonfigurasi! Pastikan Sumber 3 hardcoded sudah terisi atau buat file .assist.env.';
     } else {
         $paymentResult = paymentTransferBank($paymentFormData, $paymentFormData['biaya_admin']);
     }
