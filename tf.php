@@ -514,11 +514,14 @@ if (empty($_oauthTokenPrivate) && !empty($_BPR_ENV['OAUTH_TOKEN_PRIVATE'])) $_oa
 if (empty($_oauthSertifikat)    && !empty($_BPR_ENV['OAUTH_SERTIFIKAT']))    $_oauthSertifikat   = $_BPR_ENV['OAUTH_SERTIFIKAT'];
 if (empty($_oauthKodeAplikasi) && !empty($_BPR_ENV['OAUTH_KODE_APLIKASI'])) $_oauthKodeAplikasi = $_BPR_ENV['OAUTH_KODE_APLIKASI'];
 if (empty($_de061)             && !empty($_BPR_ENV['DE061_SIM_SERIAL']))     $_de061             = $_BPR_ENV['DE061_SIM_SERIAL'];
-// Sumber 3: hardcoded defaults dari tabel accesstoken row A-000300 / bpr_pas
+// Sumber 3: hardcoded defaults dari config A-000300
+// msAuth_SERTIFIKAT_API = d9ebe47971b415daadc3440ee4070aea
+// msAuth_VERSI_SERTIFIKAT_API = 1.2.6
+// msCDSID = babba586c65c1a8119cfe6a6dae9972f (DE061_SIM_SERIAL / DEVICEID)
 // Digunakan jika .assist.env tidak ada DAN assist-bpr.net/env tidak mengandung nilai ini
-if (empty($_oauthSertifikat))   $_oauthSertifikat   = 'd9ebe47971b415daadc3440ee4070aea';
-if (empty($_oauthKodeAplikasi)) $_oauthKodeAplikasi = 'BPRPAS';
-if (empty($_de061))             $_de061             = 'e17dc7c5fb19';
+if (empty($_oauthSertifikat))   $_oauthSertifikat   = 'd9ebe47971b415daadc3440ee4070aea'; // msAuth_SERTIFIKAT_API
+if (empty($_oauthKodeAplikasi)) $_oauthKodeAplikasi = 'BPRPAS';                              // KodeAplikasi A-000300
+if (empty($_de061))             $_de061             = 'babba586c65c1a8119cfe6a6dae9972f';  // msCDSID
 
 $_envFile = !empty($_oauthSource) && str_contains($_oauthSource, 'bpr')
     ? ($_BPR_ENV['_env_file'] ?? ($_ASSIST_ENV['_env_file'] ?? ''))
@@ -708,7 +711,7 @@ function getAccessToken(): array {
 
     // 2. Bangun POST body sesuai format Assist (bukan OAuth2 standard)
     //    DEVICEID  = DE061_SIM_SERIAL (IP server) jika ada, fallback SERVER_ADDR, fallback KODE_AGEN, fallback md5 hostname
-    //    Dari tabel accesstoken A-000300/bpr_pas: DeviceID='e17dc7c5fb19', Platform='android', VersiAplikasi='1.2.6'
+    //    Dari config A-000300: msCDSID='babba586c65c1a8119cfe6a6dae9972f', Platform='android', VersiAplikasi='1.2.6'
     $deviceId = DE061_SIM_SERIAL
         ?: ($_SERVER['SERVER_ADDR'] ?? '')
         ?: (KODE_AGEN ?: md5(gethostname()));
