@@ -13,24 +13,29 @@ Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Tran
 | `aktivasimbanking.php` | Script PHP single-file aktivasi user mBanking (v1 lama) — MTI=009/KT=50, kirim PIN via SMS/Email |
 | `aktivasimbanking2.php` | Script PHP single-file aktivasi user mBanking (v2 aktif) — MTI=009/KT=80, Kode Fasilitas + Email/SMS/WA |
 | `qrvpn.php` | QR Code Scanner + Generator + VPN Login — 3 tab, jsQR kamera, qrcode.js generate, cURL login portal |
-| `qrvpnlogin.php` | QR Scan VPN Login assist-pro.net — 4 tab: Scan QR (QRSCAN KT=02104), Generate QR Username VPN, VPN List (GETVPNLIST KT=02100), Polling Status (CEKVPN KT=04001) |
+| `qrvpnlogin.php` | QR Scan VPN Login assist-pro.net — **v1.1.0** — 5 tab: Scan QR (QRSCAN KT=02104), Generate QR Username VPN, VPN List (GETVPNLIST KT=02100), Polling Status (CEKVPN KT=04001), **Auto Flow** (wizard end-to-end + localStorage prefs) |
 
 ---
 
-## qrvpnlogin.php — QR Scan VPN Login assist-pro.net (sesi 6)
+## qrvpnlogin.php — QR Scan VPN Login assist-pro.net (sesi 6–7)
 
 Script PHP **single-file** integrasi langsung dengan `index_mobile.php` assist-pro.net.
 Mengimplementasikan seluruh alur QR scan → VPN login sesuai source code `index_mobile.assistteam.php` dan `index_mobile.vpn.php`.
 
+**v1.1.0** — Tambah Tab Auto Flow (wizard end-to-end) + localStorage persistensi prefs (MacAddress/ClientID/Email).
+
 ### Konfigurasi
 
 ```php
-define('API_BASE_URL',  'https://app.assist-pro.net');  // URL assist-pro.net
-define('API_ENDPOINT',  'index_mobile.php');             // relatif
+define('API_BASE_URL_PRIMARY',   'http://aa.pro.sis1.net/assist-pro.net');
+define('API_BASE_URL_ALTERNATE', 'http://switching.mcoll.sis1.net/assist-pro.net');
+define('API_ENDPOINT',  'index_mobile.php');
 define('CURL_TIMEOUT',  15);
 ```
 
-### 4 Tab Fungsional
+Auto-select URL: PRIMARY → ALTERNATE (HEAD request) → fallback PRIMARY.
+
+### 5 Tab Fungsional
 
 | Tab | Fungsi | Endpoint |
 |-----|--------|----------|
@@ -38,6 +43,21 @@ define('CURL_TIMEOUT',  15);
 | ⚡ **Generate QR** | Build QR berisi Username VPN (plain/JSON/custom) → download PNG | client-side |
 | 🖥️ **VPN List** | Ambil daftar VPN by email | `MTI=02, KT=02100` |
 | 🔄 **Polling Status** | Polling CEKVPN, konfirmasi connect, disconnect | `MTI=04, KT=04001/04003` |
+| ⚡ **Auto Flow** | Wizard 4-step: email → pilih VPN → QRSCAN → auto-poll → hasil | semua KT |
+
+### Auto Flow — Wizard 4 Step
+
+```
+Step 1: Masukkan email → Load VPN List → Pilih Username VPN
+Step 2: QRSCAN (KT=02104) — QR ditampilkan + kirim scan otomatis
+Step 3: Auto-polling CEKVPN (KT=04001) setiap 3 detik
+Step 4: Hasil — DataVPN + Download Sertifikat/Rasphone + Konfirmasi/Disconnect
+```
+
+### localStorage Prefs
+Nilai `MacAddress`, `ClientID`, dan `Email` disimpan di browser localStorage
+(`qrvpnlogin_prefs`) dan di-restore saat halaman dibuka ulang. Sync otomatis
+antara semua tab.
 
 ### Alur QR VPN Login
 

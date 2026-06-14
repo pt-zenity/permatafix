@@ -2,6 +2,7 @@
 /**
  * qrvpnlogin.php — QR Scan VPN Login
  * Single-file tool untuk QR Code scan + VPN login via index_mobile.php
+ * v1.1.0: Tab Auto Flow (wizard end-to-end) + localStorage prefs
  *
  * Alur: Generate QR berisi Username VPN → Scan dari mobile app AssistTeam
  *       → polling status vpn_verify_list → tampilkan hasil connect
@@ -15,6 +16,13 @@
  *   MTI=02, KT=02100  → GETVPNLIST (list VPN by email)
  *   MTI=02, KT=02105  → DISCONECTVPN
  *   MTI=04, KT=04003  → EDITVPNSTATUS (set Status=1 setelah connected)
+ *
+ * 5 Tab:
+ *   1. Scan QR      — kamera/upload → QRSCAN (KT=02104)
+ *   2. Generate QR  — build QR berisi Username VPN
+ *   3. VPN List     — GETVPNLIST (KT=02100) by email
+ *   4. Polling      — CEKVPN (KT=04001) + EDITVPNSTATUS/DISCONNECT
+ *   5. Auto Flow    — wizard end-to-end: email → pilih VPN → QRSCAN → poll → hasil
  */
 
 // ─────────────────────────────────────────────
@@ -33,7 +41,7 @@ define('API_BASE_URL_OVERRIDE',  '');
 // Endpoint index_mobile.php (relatif dari base URL)
 define('API_ENDPOINT',    'index_mobile.php');
 define('APP_TITLE',       'QR VPN Login');
-define('APP_VERSION',     '1.0.0');
+define('APP_VERSION',     '1.1.0');
 define('CURL_TIMEOUT',    15);
 define('CURL_CONNECT_TIMEOUT', 5);  // timeout cek reachability per URL
 
@@ -419,6 +427,26 @@ $apiIsOverride  = (API_BASE_URL_OVERRIDE !== '');
   /* CONFIG WARN */
   .config-banner { background: rgba(245,158,11,.12); border: 1px dashed rgba(245,158,11,.4); border-radius: 10px;
                    padding: 14px 18px; font-size: 13px; color: #fde68a; margin-bottom: 20px; }
+
+  /* AUTO FLOW STEPS */
+  .af-step { display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer; min-width:68px; }
+  .af-step-circle { width:32px; height:32px; border-radius:50%; border:2px solid var(--border); background:var(--card);
+                    display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700;
+                    color:var(--muted); transition:all .25s; }
+  .af-step-label { font-size:10px; font-weight:600; color:var(--muted); text-align:center; white-space:nowrap; transition:color .25s; }
+  .af-step.active .af-step-circle { background:var(--accent); border-color:var(--accent); color:#0f172a; }
+  .af-step.active .af-step-label { color:var(--accent); }
+  .af-step.done .af-step-circle { background:var(--green); border-color:var(--green); color:#fff; }
+  .af-step.done .af-step-label { color:var(--green); }
+  .af-step-line { flex:1; height:2px; background:var(--border); margin:0 2px; margin-bottom:20px; min-width:20px; transition:background .25s; }
+  .af-step-line.done { background:var(--green); }
+
+  /* VPN SELECT CARDS */
+  .af-vpn-card { background:#0f172a; border:1px solid var(--border); border-radius:10px; padding:12px 14px;
+                 margin-bottom:8px; cursor:pointer; display:flex; align-items:center; gap:12px;
+                 transition:border-color .2s, background .2s; }
+  .af-vpn-card:hover { border-color:var(--accent); }
+  .af-vpn-card.selected { border-color:var(--accent); background:rgba(56,189,248,.07); }
 </style>
 </head>
 <body>
@@ -470,6 +498,9 @@ $apiIsOverride  = (API_BASE_URL_OVERRIDE !== '');
     </button>
     <button class="tab-btn" onclick="switchTab('polling')" id="tab-polling">
       <i class="fas fa-rotate"></i> Polling Status
+    </button>
+    <button class="tab-btn" onclick="switchTab('autoflow')" id="tab-autoflow">
+      <i class="fas fa-bolt"></i> Auto Flow
     </button>
   </div>
 
@@ -791,6 +822,185 @@ $apiIsOverride  = (API_BASE_URL_OVERRIDE !== '');
       </div>
 
     </div><!-- /panel-polling -->
+
+
+    <!-- ═══════════════════════════════════════ -->
+    <!-- TAB 5 — AUTO FLOW                        -->
+    <!-- ═══════════════════════════════════════ -->
+    <div class="tab-panel" id="panel-autoflow">
+
+      <div class="alert alert-info" style="margin-bottom:16px;">
+        <i class="fas fa-bolt"></i>
+        <div>
+          <strong>Auto Flow</strong> — Satu wizard end-to-end: masukkan email → pilih VPN → QRSCAN otomatis →
+          polling CEKVPN otomatis → tampil hasil. Tidak perlu pindah tab secara manual.
+        </div>
+      </div>
+
+      <!-- Step progress bar -->
+      <div id="af-steps" style="display:flex; align-items:center; gap:0; margin-bottom:20px; overflow-x:auto; padding-bottom:4px;">
+        <div class="af-step active" id="af-step-1" onclick="afGotoStep(1)">
+          <div class="af-step-circle">1</div>
+          <div class="af-step-label">Email &amp; VPN</div>
+        </div>
+        <div class="af-step-line"></div>
+        <div class="af-step" id="af-step-2">
+          <div class="af-step-circle">2</div>
+          <div class="af-step-label">QRSCAN</div>
+        </div>
+        <div class="af-step-line"></div>
+        <div class="af-step" id="af-step-3">
+          <div class="af-step-circle">3</div>
+          <div class="af-step-label">Polling</div>
+        </div>
+        <div class="af-step-line"></div>
+        <div class="af-step" id="af-step-4">
+          <div class="af-step-circle">4</div>
+          <div class="af-step-label">Hasil</div>
+        </div>
+      </div>
+
+      <!-- ── STEP 1: Email + Pilih VPN ── -->
+      <div id="af-panel-1">
+        <div class="card">
+          <div class="card-title"><i class="fas fa-envelope"></i> Step 1 — Email &amp; Pilih Username VPN</div>
+
+          <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:12px;">
+            <div style="flex:1;">
+              <label>Email pengguna VPN</label>
+              <input type="email" id="af-email" placeholder="user@email.com" onkeydown="if(event.key==='Enter') afLoadVpnList()">
+            </div>
+            <button class="btn btn-primary" onclick="afLoadVpnList()" id="af-btn-loadvpn" style="height:42px; flex-shrink:0;">
+              <i class="fas fa-search"></i> Cari VPN
+            </button>
+          </div>
+
+          <div id="af-vpnlist-wrap" style="display:none;">
+            <label style="margin-bottom:8px; display:block;">Pilih Username VPN</label>
+            <div id="af-vpnlist-cards"></div>
+            <div id="af-selected-info" style="display:none; margin-top:12px;" class="alert alert-success">
+              <i class="fas fa-check-circle"></i>
+              <div>VPN dipilih: <strong id="af-selected-username"></strong> — Klik <strong>Lanjut ke QRSCAN</strong>.</div>
+            </div>
+          </div>
+
+          <div id="af-vpnlist-msg" style="display:none;" class="alert alert-error"></div>
+
+          <div style="margin-top:16px;">
+            <div style="margin-bottom:12px;">
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                <div>
+                  <label>MacAddress / DeviceID</label>
+                  <input type="text" id="af-mac" value="<?= htmlspecialchars(SCRIPT_MAC) ?>" placeholder="XX:XX:XX:XX:XX:XX" oninput="afSavePrefs()">
+                </div>
+                <div>
+                  <label>ClientID</label>
+                  <input type="text" id="af-clientid" value="<?= htmlspecialchars(SCRIPT_CLIENT_ID) ?>" oninput="afSavePrefs()">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <button class="btn btn-success btn-full" onclick="afGoStep2()" id="af-btn-step1next" disabled>
+            <i class="fas fa-arrow-right"></i> Lanjut ke QRSCAN
+          </button>
+        </div>
+      </div><!-- /af-panel-1 -->
+
+      <!-- ── STEP 2: QRSCAN ── -->
+      <div id="af-panel-2" style="display:none;">
+        <div class="card">
+          <div class="card-title"><i class="fas fa-qrcode"></i> Step 2 — QRSCAN (KT=02104)</div>
+
+          <!-- QR Preview -->
+          <div style="display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; margin-bottom:16px;">
+            <div style="flex:0 0 auto; text-align:center;">
+              <div style="background:#fff; border-radius:10px; padding:8px; display:inline-block;">
+                <canvas id="af-qr-canvas"></canvas>
+              </div>
+              <div style="font-size:11px; color:var(--muted); margin-top:6px;">Scan ini dari mobile app</div>
+            </div>
+            <div style="flex:1; min-width:180px;">
+              <div style="margin-bottom:10px; font-size:13px;">
+                <div style="color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; margin-bottom:4px;">Username VPN</div>
+                <div id="af-display-username" style="font-size:16px; font-weight:800; color:var(--accent); word-break:break-all;"></div>
+              </div>
+              <div style="margin-bottom:10px; font-size:12px; color:var(--muted);">
+                <div><i class="fas fa-network-wired"></i> MacAddress: <code id="af-display-mac"></code></div>
+                <div style="margin-top:4px;"><i class="fas fa-fingerprint"></i> ClientID: <code id="af-display-clientid"></code></div>
+              </div>
+              <div id="af-qrscan-status" class="alert alert-info" style="font-size:12px;">
+                <i class="fas fa-circle-info"></i> Siap mengirim QRSCAN. Klik tombol di bawah.
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn btn-outline" onclick="afGotoStep(1)">
+              <i class="fas fa-arrow-left"></i> Kembali
+            </button>
+            <button class="btn btn-success" onclick="afDoQrScan()" id="af-btn-qrscan">
+              <i class="fas fa-qrcode"></i> Kirim QRSCAN
+            </button>
+          </div>
+        </div>
+      </div><!-- /af-panel-2 -->
+
+      <!-- ── STEP 3: Polling ── -->
+      <div id="af-panel-3" style="display:none;">
+        <div class="card">
+          <div class="card-title"><i class="fas fa-rotate"></i> Step 3 — Auto Polling CEKVPN (KT=04001)</div>
+
+          <div class="alert alert-info" style="margin-bottom:16px; font-size:12px;">
+            <i class="fas fa-circle-notch spin"></i>
+            <div>Polling CEKVPN setiap <strong>3 detik</strong> — menunggu mobile scan QR di atas...</div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+            <span id="af-poll-badge" class="badge badge-blue pulse">
+              <i class="fas fa-circle-notch spin"></i> Polling...
+            </span>
+            <span id="af-poll-count" style="font-size:11px; color:var(--muted);"></span>
+            <button class="btn btn-outline btn-sm" onclick="afStopPoll()" id="af-btn-stoppoll" style="margin-left:auto;">
+              <i class="fas fa-stop"></i> Stop Polling
+            </button>
+          </div>
+
+          <div id="af-poll-live" style="background:#0f172a; border-radius:8px; padding:14px; min-height:80px; margin-bottom:12px;">
+            <div style="text-align:center; color:var(--muted); font-size:12px;">
+              <i class="fas fa-satellite-dish" style="font-size:24px; opacity:.3; display:block; margin-bottom:8px;"></i>
+              Menunggu response CEKVPN...
+            </div>
+          </div>
+
+          <div id="af-poll-log" style="background:#0f172a; border-radius:8px; padding:10px; height:120px; overflow-y:auto;
+               font-family:monospace; font-size:11px; color:var(--muted); line-height:1.6;"></div>
+        </div>
+      </div><!-- /af-panel-3 -->
+
+      <!-- ── STEP 4: Hasil ── -->
+      <div id="af-panel-4" style="display:none;">
+        <div class="card" style="border-color:rgba(34,197,94,.3);">
+          <div class="card-title" style="color:var(--green);"><i class="fas fa-circle-check"></i> Step 4 — Hasil VPN Connect</div>
+
+          <div id="af-result-content"></div>
+
+          <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn btn-success" onclick="afDoEditVpnStatus()" id="af-btn-editstatus">
+              <i class="fas fa-check-circle"></i> Konfirmasi Connected (KT=04003)
+            </button>
+            <button class="btn btn-danger" onclick="afDoDisconnect()" id="af-btn-disconnect">
+              <i class="fas fa-power-off"></i> Disconnect (KT=02105)
+            </button>
+            <button class="btn btn-outline" onclick="afReset()">
+              <i class="fas fa-rotate-left"></i> Mulai Ulang
+            </button>
+          </div>
+          <div id="af-action-result" style="display:none; margin-top:12px;"></div>
+        </div>
+      </div><!-- /af-panel-4 -->
+
+    </div><!-- /panel-autoflow -->
 
   </div><!-- /tab-content-wrapper -->
 
@@ -1454,9 +1664,478 @@ function renderRawJson(obj) {
   </details>`;
 }
 
-// Init
+// ═══════════════════════════════════════════════════════
+//  LOCALSTORAGE PREFS
+// ═══════════════════════════════════════════════════════
+const PREFS_KEY = 'qrvpnlogin_prefs';
+
+function loadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+    if (p.mac)      { document.getElementById('scan-mac').value      = p.mac;
+                      document.getElementById('poll-mac').value      = p.mac;
+                      document.getElementById('af-mac').value        = p.mac; }
+    if (p.clientid) { document.getElementById('scan-clientid').value = p.clientid;
+                      document.getElementById('poll-clientid').value = p.clientid;
+                      document.getElementById('af-clientid').value   = p.clientid; }
+    if (p.email)    { document.getElementById('vpnlist-email').value = p.email;
+                      document.getElementById('af-email').value      = p.email; }
+  } catch(e) {}
+}
+
+function savePrefs() {
+  try {
+    const p = {
+      mac:      document.getElementById('scan-mac').value.trim()      || document.getElementById('af-mac').value.trim(),
+      clientid: document.getElementById('scan-clientid').value.trim() || document.getElementById('af-clientid').value.trim(),
+      email:    document.getElementById('vpnlist-email').value.trim() || document.getElementById('af-email').value.trim(),
+    };
+    localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+  } catch(e) {}
+}
+
+function afSavePrefs() {
+  try {
+    const mac      = document.getElementById('af-mac').value.trim();
+    const clientid = document.getElementById('af-clientid').value.trim();
+    const email    = document.getElementById('af-email').value.trim();
+    const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+    if (mac)      p.mac      = mac;
+    if (clientid) p.clientid = clientid;
+    if (email)    p.email    = email;
+    localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    // Sync to other tabs
+    if (mac)      { document.getElementById('scan-mac').value = mac; document.getElementById('poll-mac').value = mac; }
+    if (clientid) { document.getElementById('scan-clientid').value = clientid; document.getElementById('poll-clientid').value = clientid; }
+    if (email)    document.getElementById('vpnlist-email').value = email;
+  } catch(e) {}
+}
+
+
+// ═══════════════════════════════════════════════════════
+//  TAB 5 — AUTO FLOW
+// ═══════════════════════════════════════════════════════
+let afSelectedUsername = '';
+let afPollTimer        = null;
+let afPollCount        = 0;
+let afLastDataVPN      = null;
+let afCurrentStep      = 1;
+
+// ── Step navigation ─────────────────────────
+function afGotoStep(n) {
+  [1,2,3,4].forEach(i => {
+    document.getElementById('af-panel-' + i).style.display = (i === n) ? 'block' : 'none';
+    const stepEl = document.getElementById('af-step-' + i);
+    stepEl.classList.remove('active','done');
+    if (i < n)        stepEl.classList.add('done');
+    else if (i === n) stepEl.classList.add('active');
+    // step lines
+    const lineEl = stepEl.nextElementSibling;
+    if (lineEl && lineEl.classList.contains('af-step-line')) {
+      lineEl.classList.toggle('done', i < n);
+    }
+  });
+  afCurrentStep = n;
+}
+
+// ── Step 1: Load VPN list ────────────────────
+async function afLoadVpnList() {
+  const email = document.getElementById('af-email').value.trim();
+  if (!email) return;
+  afSavePrefs();
+
+  const btn = document.getElementById('af-btn-loadvpn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"><i class="fas fa-circle-notch"></i></span>';
+
+  const msgEl  = document.getElementById('af-vpnlist-msg');
+  const wrapEl = document.getElementById('af-vpnlist-wrap');
+  msgEl.style.display  = 'none';
+  wrapEl.style.display = 'none';
+  document.getElementById('af-selected-info').style.display = 'none';
+  document.getElementById('af-btn-step1next').disabled = true;
+  afSelectedUsername = '';
+
+  try {
+    const res = await postAction('get_vpn_list', { email });
+    if (!res.ok) {
+      msgEl.innerHTML = `<i class="fas fa-times-circle"></i> ${escHtml(res.msg)}`;
+      msgEl.style.display = 'flex';
+      return;
+    }
+    const d = res.data;
+    if (d.Status != 1 && d.Status !== '1') {
+      msgEl.innerHTML = `<i class="fas fa-times-circle"></i> ${escHtml(d.MSG || 'Gagal')}`;
+      msgEl.style.display = 'flex';
+      return;
+    }
+    const list = d.Data || [];
+    if (list.length === 0) {
+      msgEl.className = 'alert alert-warn';
+      msgEl.innerHTML = `<i class="fas fa-triangle-exclamation"></i> Tidak ada VPN untuk email <strong>${escHtml(email)}</strong>.`;
+      msgEl.style.display = 'flex';
+      return;
+    }
+
+    // Render VPN cards to pick from
+    let html = '';
+    list.forEach(row => {
+      const si = vpnStatusInfo(row.Status);
+      const blocked = row.Block ? '<span class="badge badge-red" style="font-size:10px;"><i class="fas fa-ban"></i> Blok</span>' : '';
+      html += `
+        <div class="af-vpn-card" id="af-vpc-${escHtml(row.Username||'')}" onclick="afSelectVpn('${escHtml(row.Username||'')}')">
+          <div style="width:36px;height:36px;background:rgba(56,189,248,.1);border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <i class="fas fa-shield-halved" style="color:var(--accent);font-size:16px;"></i>
+          </div>
+          <div style="flex:1;">
+            <div style="font-weight:700;font-size:13px;color:var(--accent);">${escHtml(row.Username||'')}</div>
+            <div style="font-size:11px;color:var(--muted);">${escHtml(row.Customer||'')} · ${escHtml(row.PPP_Profile||'')}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+            <span class="badge ${si.cls}" style="font-size:10px;">${si.icon} ${si.label}</span>
+            ${blocked}
+          </div>
+        </div>`;
+    });
+    document.getElementById('af-vpnlist-cards').innerHTML = html;
+    wrapEl.style.display = 'block';
+
+    // Auto-select if only one
+    if (list.length === 1) afSelectVpn(list[0].Username || '');
+
+  } catch(e) {
+    msgEl.className = 'alert alert-error';
+    msgEl.innerHTML = `<i class="fas fa-bug"></i> ${escHtml(e.message)}`;
+    msgEl.style.display = 'flex';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-search"></i> Cari VPN';
+  }
+}
+
+function afSelectVpn(username) {
+  afSelectedUsername = username;
+  document.querySelectorAll('.af-vpn-card').forEach(el => el.classList.remove('selected'));
+  const card = document.getElementById('af-vpc-' + username);
+  if (card) card.classList.add('selected');
+  document.getElementById('af-selected-username').textContent = username;
+  document.getElementById('af-selected-info').style.display = 'flex';
+  document.getElementById('af-btn-step1next').disabled = false;
+}
+
+// ── Step 2: QRSCAN ──────────────────────────
+function afGoStep2() {
+  if (!afSelectedUsername) return;
+  const mac      = document.getElementById('af-mac').value.trim()      || SCRIPT_MAC;
+  const clientId = document.getElementById('af-clientid').value.trim() || CLIENT_ID;
+
+  // Render info
+  document.getElementById('af-display-username').textContent = afSelectedUsername;
+  document.getElementById('af-display-mac').textContent      = mac;
+  document.getElementById('af-display-clientid').textContent = clientId;
+
+  // Generate QR
+  const canvas = document.getElementById('af-qr-canvas');
+  QRCode.toCanvas(canvas, afSelectedUsername, {
+    width: 180, margin: 2,
+    color: { dark:'#000000', light:'#ffffff' },
+    errorCorrectionLevel: 'M'
+  }, () => {});
+
+  document.getElementById('af-qrscan-status').className = 'alert alert-info';
+  document.getElementById('af-qrscan-status').innerHTML = '<i class="fas fa-circle-info"></i> Siap mengirim QRSCAN. Klik tombol di bawah.';
+  document.getElementById('af-btn-qrscan').disabled = false;
+  document.getElementById('af-btn-qrscan').innerHTML = '<i class="fas fa-qrcode"></i> Kirim QRSCAN';
+
+  afGotoStep(2);
+}
+
+async function afDoQrScan() {
+  const username  = afSelectedUsername;
+  const mac       = document.getElementById('af-mac').value.trim()      || SCRIPT_MAC;
+  const clientId  = document.getElementById('af-clientid').value.trim() || CLIENT_ID;
+  const appVer    = '1.1.0';
+
+  const btn = document.getElementById('af-btn-qrscan');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"><i class="fas fa-circle-notch"></i></span> Mengirim...';
+
+  const statusEl = document.getElementById('af-qrscan-status');
+  statusEl.className = 'alert alert-info';
+  statusEl.innerHTML = '<i class="fas fa-circle-notch spin"></i> Mengirim QRSCAN ke server...';
+
+  try {
+    const res = await postAction('qrscan', { username, mac_address: mac, client_id: clientId, app_version: appVer });
+    if (!res.ok) {
+      statusEl.className = 'alert alert-error';
+      statusEl.innerHTML = `<i class="fas fa-times-circle"></i> ${escHtml(res.msg)}`;
+      return;
+    }
+    const d = res.data;
+    if (d.Status == '1' || d.Status === 1) {
+      statusEl.className = 'alert alert-success';
+      statusEl.innerHTML = `<i class="fas fa-check-circle"></i> <strong>QRSCAN sukses</strong> — ${escHtml(d.MSG)}. Lanjut ke polling...`;
+      // Auto proceed to step 3
+      setTimeout(() => afGoStep3(mac, clientId), 1000);
+    } else {
+      statusEl.className = 'alert alert-error';
+      statusEl.innerHTML = `<i class="fas fa-times-circle"></i> <strong>QRSCAN gagal</strong> — ${escHtml(d.MSG || 'Tidak ada pesan')}`;
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-rotate"></i> Coba Lagi';
+    }
+  } catch(e) {
+    statusEl.className = 'alert alert-error';
+    statusEl.innerHTML = `<i class="fas fa-bug"></i> Error: ${escHtml(e.message)}`;
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-rotate"></i> Coba Lagi';
+  }
+}
+
+// ── Step 3: Auto polling ─────────────────────
+function afGoStep3(mac, clientId) {
+  afPollCount = 0;
+  afLastDataVPN = null;
+  document.getElementById('af-poll-log').innerHTML = '';
+  document.getElementById('af-poll-count').textContent = '';
+  document.getElementById('af-poll-live').innerHTML = `
+    <div style="text-align:center; color:var(--muted); font-size:12px;">
+      <i class="fas fa-satellite-dish" style="font-size:24px; opacity:.3; display:block; margin-bottom:8px;"></i>
+      Menunggu response CEKVPN...
+    </div>`;
+  const badge = document.getElementById('af-poll-badge');
+  badge.className = 'badge badge-blue pulse';
+  badge.innerHTML = '<i class="fas fa-circle-notch spin"></i> Polling...';
+  document.getElementById('af-btn-stoppoll').disabled = false;
+
+  afGotoStep(3);
+
+  // Start polling every 3s
+  afPollTimer = setInterval(() => afPollOnce(mac, clientId), 3000);
+  afPollOnce(mac, clientId);
+}
+
+function afAddLog(msg, type = 'default') {
+  const logEl = document.getElementById('af-poll-log');
+  const now   = new Date().toLocaleTimeString('id-ID');
+  const colors = { success:'#86efac', error:'#fca5a5', warn:'#fde68a', info:'#7dd3fc', default:'#94a3b8' };
+  const c = colors[type] || colors.default;
+  const line = document.createElement('div');
+  line.innerHTML = `<span style="color:#475569;">[${now}]</span> <span style="color:${c};">${msg}</span>`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function afStopPoll() {
+  clearInterval(afPollTimer);
+  afPollTimer = null;
+  const badge = document.getElementById('af-poll-badge');
+  badge.className = 'badge badge-gray';
+  badge.innerHTML = 'Stopped';
+  document.getElementById('af-btn-stoppoll').disabled = true;
+  afAddLog('Polling dihentikan manual.', 'warn');
+}
+
+async function afPollOnce(mac, clientId) {
+  afPollCount++;
+  document.getElementById('af-poll-count').textContent = `(${afPollCount}x)`;
+
+  try {
+    const res = await postAction('cek_vpn', { mac_address: mac, client_id: clientId });
+    if (!res.ok) {
+      afAddLog('Error: ' + (res.msg || 'unknown'), 'error');
+      return;
+    }
+    const outer = res.data;
+    const inner = outer.Data || outer;
+    const msg   = inner.MSG  || outer.MSG || '';
+    const s     = inner.Status;
+
+    afAddLog(`CEKVPN → ${msg} (Status=${s})`, msg === 'can connect' ? 'success' : 'default');
+
+    // Update live status area
+    const liveEl = document.getElementById('af-poll-live');
+    if (msg === 'can connect' && (s == 1 || s === '1')) {
+      // Got it!
+      clearInterval(afPollTimer);
+      afPollTimer = null;
+      const badge = document.getElementById('af-poll-badge');
+      badge.className = 'badge badge-green';
+      badge.innerHTML = '<i class="fas fa-check-circle"></i> Can Connect!';
+      document.getElementById('af-btn-stoppoll').disabled = true;
+
+      afLastDataVPN = inner.DataVPN || null;
+      if (afLastDataVPN && afLastDataVPN.Username) {
+        afSelectedUsername = afLastDataVPN.Username;
+      }
+
+      liveEl.innerHTML = `<div class="alert alert-success" style="font-size:13px;">
+        <i class="fas fa-check-circle"></i>
+        <div><strong>CAN CONNECT</strong> — Mobile app sudah scan QR! Melanjutkan ke Step 4...</div>
+      </div>`;
+
+      setTimeout(() => afGoStep4(), 800);
+
+    } else if (msg === 'sudah connect' || s == 3 || s === '3') {
+      const badge = document.getElementById('af-poll-badge');
+      badge.className = 'badge badge-blue';
+      badge.innerHTML = '<i class="fas fa-link"></i> Sudah Connect';
+      liveEl.innerHTML = `<div class="alert alert-info" style="font-size:12px;">
+        <i class="fas fa-link"></i> <strong>Sudah Connect</strong> — VPN aktif. Disconnect dulu untuk reconnect.
+      </div>`;
+    } else if (msg.indexOf('not found') >= 0 || s == 2 || s === '2') {
+      liveEl.innerHTML = `<div class="alert alert-warn" style="font-size:12px;">
+        <i class="fas fa-circle-exclamation"></i> <strong>${escHtml(msg)}</strong> — Belum ada scan. Tunggu...
+      </div>`;
+    } else {
+      liveEl.innerHTML = `<div style="padding:8px;font-size:12px;color:var(--muted);">
+        <i class="fas fa-satellite-dish"></i> ${escHtml(msg)} (Status=${escHtml(String(s||'?'))})
+      </div>`;
+    }
+  } catch(e) {
+    afAddLog('JS Error: ' + e.message, 'error');
+  }
+}
+
+// ── Step 4: Hasil ────────────────────────────
+function afGoStep4() {
+  const dataVPN = afLastDataVPN;
+  let html = '';
+
+  if (dataVPN) {
+    html = `
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; font-size:13px;">
+        ${dataVPN.Username    ? `<div><div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:3px;">Username</div>
+                                   <code style="color:var(--accent);font-size:14px;">${escHtml(dataVPN.Username)}</code></div>` : ''}
+        ${dataVPN.Customer    ? `<div><div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:3px;">Customer</div>
+                                   <span>${escHtml(dataVPN.Customer)}</span></div>` : ''}
+        ${dataVPN.Host        ? `<div><div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:3px;">Host</div>
+                                   <code>${escHtml(dataVPN.Host)}</code></div>` : ''}
+        ${dataVPN.VPN_Gateway ? `<div><div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin-bottom:3px;">Gateway</div>
+                                   <code>${escHtml(dataVPN.VPN_Gateway)}</code></div>` : ''}
+      </div>`;
+
+    if (dataVPN.URLSertifikat) {
+      html += `
+        <div class="divider"></div>
+        <div style="font-size:12px; margin-bottom:10px;">
+          <div style="font-weight:700; color:var(--muted); text-transform:uppercase; font-size:11px; margin-bottom:6px;">Sertifikat &amp; Rasphone</div>
+          <div style="margin-bottom:6px;">
+            <a href="${escHtml(dataVPN.URLSertifikat)}" target="_blank" download
+               class="btn btn-outline btn-sm">
+              <i class="fas fa-certificate"></i> Download Sertifikat
+            </a>
+          </div>
+          ${dataVPN.URLRasphone ? `<div>
+            <a href="${escHtml(dataVPN.URLRasphone)}" target="_blank" download
+               class="btn btn-outline btn-sm">
+              <i class="fas fa-file-alt"></i> Download Rasphone (.pbk)
+            </a>
+          </div>` : ''}
+        </div>`;
+    }
+
+  } else {
+    html = `<div class="alert alert-success" style="font-size:13px; margin-bottom:14px;">
+      <i class="fas fa-check-circle"></i>
+      <div><strong>CAN CONNECT</strong> — VPN siap digunakan. Klik Konfirmasi Connected untuk menyelesaikan.</div>
+    </div>`;
+  }
+
+  document.getElementById('af-result-content').innerHTML = html;
+  document.getElementById('af-action-result').style.display = 'none';
+  document.getElementById('af-btn-editstatus').disabled = false;
+  document.getElementById('af-btn-editstatus').innerHTML = '<i class="fas fa-check-circle"></i> Konfirmasi Connected (KT=04003)';
+  document.getElementById('af-btn-disconnect').disabled = false;
+  document.getElementById('af-btn-disconnect').innerHTML = '<i class="fas fa-power-off"></i> Disconnect (KT=02105)';
+
+  afGotoStep(4);
+}
+
+async function afDoEditVpnStatus() {
+  const username = afSelectedUsername;
+  const mac      = document.getElementById('af-mac').value.trim()      || SCRIPT_MAC;
+  const clientId = document.getElementById('af-clientid').value.trim() || CLIENT_ID;
+  if (!username) { alert('Username VPN tidak ditemukan'); return; }
+
+  const btn = document.getElementById('af-btn-editstatus');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"><i class="fas fa-circle-notch"></i></span> Mengirim...';
+
+  try {
+    const res = await postAction('edit_vpn_status', { username, mac_address: mac, client_id: clientId });
+    const d   = res.ok ? res.data : res;
+    const ok  = d.Status == '1' || d.Status === 1;
+    afShowActionResult(ok ? 'success' : 'error',
+      `<i class="fas fa-${ok?'check-circle':'times-circle'}"></i> 
+       EDITVPNSTATUS (KT=04003): <strong>${escHtml(d.MSG||'')}</strong>`);
+  } catch(e) {
+    afShowActionResult('error', `<i class="fas fa-bug"></i> ${escHtml(e.message)}`);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-check-circle"></i> Konfirmasi Connected (KT=04003)';
+  }
+}
+
+async function afDoDisconnect() {
+  const username = afSelectedUsername;
+  if (!username) { alert('Username VPN tidak ditemukan'); return; }
+  if (!confirm(`Disconnect VPN user: ${username}?`)) return;
+
+  const btn = document.getElementById('af-btn-disconnect');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"><i class="fas fa-circle-notch"></i></span> Disconnect...';
+
+  try {
+    const res = await postAction('disconnect_vpn', { username });
+    const d   = res.ok ? res.data : res;
+    const ok  = d.Status == '1' || d.Status === 1;
+    afShowActionResult(ok ? 'success' : 'error',
+      `<i class="fas fa-${ok?'check-circle':'times-circle'}"></i> 
+       DISCONECTVPN (KT=02105): <strong>${escHtml(d.MSG||'')}</strong>`);
+    if (ok) {
+      btn.innerHTML = '<i class="fas fa-power-off"></i> Disconnect (KT=02105)';
+      btn.disabled = false;
+    }
+  } catch(e) {
+    afShowActionResult('error', `<i class="fas fa-bug"></i> ${escHtml(e.message)}`);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-power-off"></i> Disconnect (KT=02105)';
+  }
+}
+
+function afShowActionResult(type, html) {
+  const el  = document.getElementById('af-action-result');
+  const cls = { success:'alert-success', error:'alert-error', warn:'alert-warn' }[type] || 'alert-info';
+  el.innerHTML     = `<div class="alert ${cls}">${html}</div>`;
+  el.style.display = 'block';
+}
+
+function afReset() {
+  clearInterval(afPollTimer);
+  afPollTimer    = null;
+  afSelectedUsername = '';
+  afPollCount    = 0;
+  afLastDataVPN  = null;
+  document.getElementById('af-email').value    = '';
+  document.getElementById('af-vpnlist-wrap').style.display = 'none';
+  document.getElementById('af-vpnlist-msg').style.display  = 'none';
+  document.getElementById('af-selected-info').style.display = 'none';
+  document.getElementById('af-btn-step1next').disabled = true;
+  afGotoStep(1);
+}
+
+
+// ═══════════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   updateQRPreview();
+  loadPrefs();
+  // Auto-save prefs when main tab inputs change
+  ['scan-mac','scan-clientid','poll-mac','poll-clientid','vpnlist-email'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', savePrefs);
+  });
 });
 </script>
 </body>
