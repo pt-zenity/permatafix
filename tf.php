@@ -35,7 +35,7 @@
  *      dengan header: Authorization: Bearer {accessToken}
  *   4. Response di-parse dari ISO 8583 array
  *
- * Referensi: assist-switching_v3_pro v1.6.39 "Assist Pro Net"
+ * Referensi: assist-switching_v3_pro v1.6.40 "Assist Pro Net"
  *   - config/local_config.php
  *   - mvc/mbanking/mbanking.controller.php → ProsesInquiryPayment()
  *   - storage/cds/cache/*snap_tf_bank_permata.cache → KODE_AGEN + MFTFI
@@ -1146,11 +1146,102 @@ function inquiryTransferBank(array $params): array {
 }
 
 // ============================================================
+// HELPER — RC / DE039 DESCRIPTION
+// ============================================================
+
+/**
+ * rcDescription — terjemahkan kode RC (DE039) ISO 8583 ke deskripsi manusiawi
+ *
+ * Kode standar ISO 8583 + kode internal Assist Switching.
+ *
+ * @param  string $rc   Kode RC 2-karakter (misal "00", "03", "11", "XT")
+ * @return string       Deskripsi singkat
+ */
+function rcDescription(string $rc): string {
+    $map = [
+        // ── Sukses ────────────────────────────────────────
+        '00' => 'Approved / Sukses',
+        // ── Tolak dari bank tujuan ─────────────────────────
+        '01' => 'Refer to Card Issuer',
+        '02' => 'Refer to Card Issuer (Special Condition)',
+        '03' => 'Invalid Merchant / Transaksi tidak diizinkan oleh bank tujuan',
+        '04' => 'Pick Up Card',
+        '05' => 'Do Not Honor — transaksi ditolak bank tujuan',
+        '06' => 'Error pada sistem bank tujuan',
+        '07' => 'Pick Up Card (Special Condition)',
+        '08' => 'Honor With Identification',
+        '09' => 'Request In Progress',
+        '10' => 'Approved For Partial Amount',
+        '11' => 'Approved VIP — Inquiry gagal / tidak ada data (RC=11 dari switching)',
+        '12' => 'Invalid Transaction',
+        '13' => 'Invalid Amount',
+        '14' => 'Invalid Card Number / Nomor rekening tidak valid',
+        '15' => 'No Such Issuer',
+        '19' => 'Re-enter Transaction',
+        '20' => 'Invalid Response',
+        '21' => 'No Action Taken',
+        '22' => 'Suspected Malfunction',
+        '25' => 'Unable to Locate Record On File',
+        '30' => 'Format Error',
+        '31' => 'Bank Not Supported by Switch',
+        '33' => 'Expired Card',
+        '34' => 'Suspected Fraud',
+        '36' => 'Restricted Card',
+        '38' => 'PIN Tries Exceeded',
+        '39' => 'No Credit Account',
+        '40' => 'Requested Function Not Supported',
+        '41' => 'Lost Card',
+        '43' => 'Stolen Card, Pick Up',
+        '51' => 'Insufficient Funds / Saldo tidak cukup',
+        '52' => 'No Checking Account',
+        '53' => 'No Savings Account',
+        '54' => 'Expired Card',
+        '55' => 'Incorrect PIN',
+        '56' => 'No Card Record',
+        '57' => 'Transaction Not Permitted to Cardholder',
+        '58' => 'Transaction Not Permitted to Terminal',
+        '59' => 'Suspected Fraud',
+        '61' => 'Exceeds Withdrawal Amount Limit',
+        '62' => 'Restricted Card',
+        '63' => 'Security Violation',
+        '65' => 'Activity Limit Exceeded',
+        '68' => 'Response Received Too Late',
+        '75' => 'PIN Tries Exceeded',
+        '76' => 'Unable To Locate Previous Message',
+        '77' => 'Previous Message Located For A Repeat Or Reversal',
+        '78' => 'Blocked — First Use',
+        '80' => 'Network Not Found',
+        '82' => 'No Security Module',
+        '83' => 'Unable to Verify PIN',
+        '84' => 'Invalid Authorization Life Cycle',
+        '85' => 'Not Declined (V only)',
+        '86' => 'PIN Validation Not Possible',
+        '88' => 'Cryptographic Failure',
+        '89' => 'Authentication Failure',
+        '91' => 'Issuer or Switch is Inoperative / Bank tujuan tidak dapat dihubungi',
+        '92' => 'Financial Institution Or Intermediate Network Facility Cannot Be Found',
+        '93' => 'Transaction Cannot Be Completed — Violation of Law',
+        '94' => 'Duplicate Transmission',
+        '95' => 'Reconcile Error',
+        '96' => 'System Malfunction',
+        '97' => 'Reconciliation Totals Reset',
+        '98' => 'MAC Error',
+        '99' => 'Reserved for National Use',
+        // ── Kode internal Assist Switching ─────────────────
+        'XV' => 'Validasi gagal (input tidak lengkap)',
+        'XT' => 'Token OAuth gagal didapat',
+        'XP' => 'Gagal parsing response switching',
+        'XH' => 'HTTP error saat koneksi ke switching',
+    ];
+    return $map[$rc] ?? "RC={$rc} (kode tidak dikenal)";
+}
+
+// ============================================================
 // PAYMENT (PAYTFDANA / PAYLLG / PAYRTGS) — FUNGSI EKSEKUSI
 // ============================================================
 
 /**
- * buildDE048Payment — bangun DE048 untuk request PAYMENT (MTI=200)
+ * buildDE048Payment — bangun DE048 untuk request PAYMENT (MTI=002)
  *
  * Format:
  *   "{prefix}*1001*PAY{JENIS}~~{kodeBank}*0"
@@ -1180,13 +1271,13 @@ function buildDE048Payment(string $jenisTF, string $kodeBank, int $nominal = 0):
 }
 
 /**
- * buildISO8583PaymentRequest — bangun ISO 8583 request untuk PAYMENT (MTI=200)
+ * buildISO8583PaymentRequest — bangun ISO 8583 request untuk PAYMENT (MTI=002 = DIGITAL_BANK)
  *
  * Sesuai source mbanking.controller.php → mBanking() → SendHTTPPost ke CBS.
  * CBS yang kemudian memanggil PermataSNAP::ReceiverHome (MTI=022) untuk eksekusi.
  *
  * Perbedaan utama dari Inquiry:
- *   MTI    = "200"    (bukan "010")
+ *   MTI    = "002"    (bukan "010" — DIGITAL_BANK bukan DIGITAL_BANK_INQUIRY)
  *   DE003  = "211041" (bukan "231041") — DE003_TRX_PASCA_2
  *   DE004  = nominal transfer aktual (12 digit)
  *   DE039  = "00"     (sinyal konfirmasi dari nasabah)
@@ -1250,7 +1341,7 @@ function buildISO8583PaymentRequest(array $params, string $accessToken, int $bia
 
     return [
         'MTI' => '002',        // DIGITAL_BANK — ReadRequest() hanya mengenal "002" untuk payment
-        'MSG' => $msg,         // MTI "200" tidak ada handler-nya → jatuh ke else → "Request salah!!"
+        'MSG' => $msg,         // MTI lama "200" tidak ada handler-nya → jatuh ke else → "Request salah!!"
     ];
 }
 
@@ -1306,7 +1397,7 @@ function parsePaymentResponse(array $httpResult): array {
  *
  * Flow:
  *   Step 1: Ambil token (reuse cache dari inquiry jika masih valid)
- *   Step 2: Bangun ISO 8583 MTI=200 dengan DE003=211041 (PAYTFDANA/etc.)
+ *   Step 2: Bangun ISO 8583 MTI=002 (DIGITAL_BANK) dengan DE003=211041 (PAYTFDANA/etc.)
  *   Step 3: Kirim POST ke /mobile-digital
  *   Step 4: Parse response — RC=00 berarti transfer berhasil
  *
@@ -1343,7 +1434,7 @@ function paymentTransferBank(array $params, int $biayaAdmin = 0): array {
     }
     $accessToken = $tokenResult['token'];
 
-    // ── Step 2: Bangun ISO 8583 MTI=200 ───────────────────────
+    // ── Step 2: Bangun ISO 8583 MTI=002 (DIGITAL_BANK) ──────────
     $isoRequest = buildISO8583PaymentRequest($params, $accessToken, $biayaAdmin);
     $debug['step2_iso_request'] = $isoRequest;
 
@@ -2481,7 +2572,7 @@ DE061_SIM_SERIAL=</pre>
                     <div class="ch-icon">💸</div>
                     Konfirmasi Eksekusi Transfer
                     <span style="margin-left:auto;background:rgba(255,255,255,.2);border-radius:6px;padding:2px 10px;font-size:.72rem;letter-spacing:.3px;">
-                        ISO 8583 MTI=200
+                        ISO 8583 MTI=002
                     </span>
                 </div>
                 <div class="confirm-body">
@@ -2490,7 +2581,7 @@ DE061_SIM_SERIAL=</pre>
                         <span class="cw-ic">⚠️</span>
                         <div>
                             <strong>Peringatan:</strong> Tombol <em>Eksekusi Transfer</em> akan mengirimkan
-                            request <strong>MTI=200 / DE003=211041 (PAYTFDANA)</strong> ke switching.
+                            request <strong>MTI=002 (DIGITAL_BANK) / DE003=211041 (PAYTFDANA)</strong> ke switching.
                             Transaksi ini bersifat <strong>irreversible</strong> — pastikan rekening tujuan,
                             nominal, dan bank sudah benar sebelum melanjutkan.
                         </div>
@@ -2565,12 +2656,51 @@ DE061_SIM_SERIAL=</pre>
             <?php endif; ?>
 
             <?php else: ?>
-            <div class="alert alert-error">
-                <span class="al-ic">🚫</span>
-                <div>
-                    <strong>Step:</strong> <?= htmlspecialchars($result['step'] ?? '-') ?><br>
-                    <strong>RC:</strong> <?= htmlspecialchars($result['rc'] ?? '-') ?><br>
-                    <strong>Pesan:</strong> <?= htmlspecialchars($result['message'] ?? '-') ?>
+            <?php
+                $_iRC   = $result['rc']     ?? 'XT';
+                $_iStep = $result['step']   ?? '-';
+                $_iMsg  = $result['message'] ?? 'Inquiry gagal';
+                $_iDesc = rcDescription($_iRC);
+                // Tip spesifik per RC
+                $_iTip  = '';
+                if ($_iRC === '11') $_iTip = '💡 RC=11: Switching tidak menemukan data rekening. Kemungkinan InquiryCode untuk bank ini belum diset di tabel bank_code (kolom InquiryCode), atau bank tidak support inquiry. Cek via SQL: SELECT InquiryCode FROM bank_code WHERE Kode=\'...\';';
+                elseif ($_iRC === '14') $_iTip = '💡 RC=14: Nomor rekening tidak terdaftar di bank tujuan.';
+                elseif ($_iRC === '91') $_iTip = '💡 RC=91: Bank tujuan tidak dapat dihubungi saat ini.';
+                elseif ($_iRC === '03') $_iTip = '💡 RC=03: Bank tujuan menolak inquiry — rekening mungkin diblokir atau tidak mengizinkan transfer masuk.';
+            ?>
+            <div class="alert alert-error" style="align-items:flex-start;">
+                <span class="al-ic" style="font-size:1.5rem;margin-top:2px;">🚫</span>
+                <div style="flex:1;">
+                    <div style="font-weight:700;margin-bottom:6px;">Inquiry Gagal</div>
+                    <table style="border-collapse:collapse;font-size:.87rem;width:100%;">
+                        <tr>
+                            <td style="padding:3px 10px 3px 0;font-weight:600;white-space:nowrap;width:90px;">RC</td>
+                            <td style="padding:3px 0;">
+                                <code style="background:#fee2e2;border:1px solid #fca5a5;border-radius:4px;padding:2px 8px;font-weight:700;color:#991b1b;">
+                                    <?= htmlspecialchars($_iRC) ?>
+                                </code>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:3px 10px 3px 0;font-weight:600;">Deskripsi</td>
+                            <td style="padding:3px 0;"><?= htmlspecialchars($_iDesc) ?></td>
+                        </tr>
+                        <?php if (!empty($_iMsg) && $_iMsg !== 'Inquiry gagal'): ?>
+                        <tr>
+                            <td style="padding:3px 10px 3px 0;font-weight:600;">Pesan</td>
+                            <td style="padding:3px 0;"><?= htmlspecialchars($_iMsg) ?></td>
+                        </tr>
+                        <?php endif; ?>
+                        <tr>
+                            <td style="padding:3px 10px 3px 0;font-weight:600;">Step</td>
+                            <td style="padding:3px 0;font-size:.8rem;color:#666;"><?= htmlspecialchars($_iStep) ?></td>
+                        </tr>
+                    </table>
+                    <?php if ($_iTip): ?>
+                    <div style="margin-top:8px;padding:8px 10px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;font-size:.82rem;color:#78350f;">
+                        <?= htmlspecialchars($_iTip) ?>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
             <?php endif; ?>
@@ -2726,13 +2856,74 @@ RAW Response:
             </div>
 
             <?php else: ?>
-            <!-- Gagal -->
-            <div class="confirm-warning">
-                <span class="cw-ic">🚫</span>
-                <div>
-                    <strong>Step:</strong> <?= htmlspecialchars($paymentResult['step'] ?? '-') ?><br>
-                    <strong>RC:</strong> <?= htmlspecialchars($paymentResult['rc'] ?? '-') ?><br>
-                    <strong>Pesan:</strong> <?= htmlspecialchars($paymentResult['message'] ?? '-') ?>
+            <!-- Gagal — tampilkan detail RC + deskripsi ISO 8583 -->
+            <?php
+                $_fRC   = $paymentResult['rc']      ?? 'XT';
+                $_fStep = $paymentResult['step']     ?? '-';
+                $_fMsg  = $paymentResult['message']  ?? 'Transfer gagal';
+                $_fDesc = rcDescription($_fRC);
+            ?>
+            <div class="confirm-warning" style="align-items:flex-start;">
+                <span class="cw-ic" style="font-size:1.6rem;margin-top:2px;">🚫</span>
+                <div style="flex:1;">
+                    <div style="font-size:1rem;font-weight:700;margin-bottom:8px;">
+                        Transfer Ditolak / Gagal
+                    </div>
+                    <table style="width:100%;border-collapse:collapse;font-size:.87rem;">
+                        <tr>
+                            <td style="padding:4px 8px 4px 0;color:#7c3aed;font-weight:600;white-space:nowrap;width:110px;">RC</td>
+                            <td style="padding:4px 0;">
+                                <code style="background:#fef3c7;border:1px solid #fcd34d;border-radius:4px;padding:2px 8px;font-size:.9rem;font-weight:700;color:#92400e;">
+                                    <?= htmlspecialchars($_fRC) ?>
+                                </code>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:4px 8px 4px 0;color:#7c3aed;font-weight:600;white-space:nowrap;">Deskripsi</td>
+                            <td style="padding:4px 0;"><?= htmlspecialchars($_fDesc) ?></td>
+                        </tr>
+                        <?php if (!empty($_fMsg) && $_fMsg !== 'Transfer gagal'): ?>
+                        <tr>
+                            <td style="padding:4px 8px 4px 0;color:#7c3aed;font-weight:600;white-space:nowrap;">Pesan</td>
+                            <td style="padding:4px 0;"><?= htmlspecialchars($_fMsg) ?></td>
+                        </tr>
+                        <?php endif; ?>
+                        <tr>
+                            <td style="padding:4px 8px 4px 0;color:#7c3aed;font-weight:600;white-space:nowrap;">Step</td>
+                            <td style="padding:4px 0;font-size:.8rem;color:#666;"><?= htmlspecialchars($_fStep) ?></td>
+                        </tr>
+                        <tr>
+                            <td style="padding:4px 8px 4px 0;color:#7c3aed;font-weight:600;white-space:nowrap;">Rekening</td>
+                            <td style="padding:4px 0;">
+                                <?= htmlspecialchars($paymentResult['beneficiary']['account_no'] ?? '-') ?>
+                                — <?= htmlspecialchars($paymentResult['beneficiary']['bank_name'] ?? '-') ?>
+                                (<?= htmlspecialchars($paymentResult['beneficiary']['bank_code'] ?? '-') ?>)
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:4px 8px 4px 0;color:#7c3aed;font-weight:600;white-space:nowrap;">Nominal</td>
+                            <td style="padding:4px 0;">
+                                Rp <?= number_format($paymentResult['nominal'] ?? 0, 0, ',', '.') ?>
+                                <?php if (($paymentResult['biaya_admin'] ?? 0) > 0): ?>
+                                + biaya Rp <?= number_format($paymentResult['biaya_admin'], 0, ',', '.') ?>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    </table>
+                    <?php
+                    // Petunjuk spesifik untuk RC umum
+                    $tip = '';
+                    if ($_fRC === '03') $tip = '💡 RC=03: Bank tujuan menolak transaksi ini. Kemungkinan rekening tujuan tidak aktif, fitur transfer masuk tidak diizinkan, atau ada pembatasan dari bank tujuan. Hubungi bank tujuan.';
+                    elseif ($_fRC === '51') $tip = '💡 RC=51: Saldo rekening sumber tidak mencukupi.';
+                    elseif ($_fRC === '14') $tip = '💡 RC=14: Nomor rekening tujuan tidak valid atau tidak terdaftar di bank tujuan.';
+                    elseif ($_fRC === '91') $tip = '💡 RC=91: Sistem bank tujuan sedang tidak dapat dihubungi. Coba beberapa menit lagi.';
+                    elseif ($_fRC === '96') $tip = '💡 RC=96: System malfunction. Coba ulang transaksi.';
+                    elseif ($_fRC === '11') $tip = '💡 RC=11: Inquiry tidak mengembalikan data. Pastikan InquiryCode bank di tabel bank_code sudah terisi dengan benar.';
+                    if ($tip): ?>
+                    <div style="margin-top:10px;padding:8px 10px;background:#fffbeb;border-left:3px solid #f59e0b;border-radius:4px;font-size:.82rem;color:#78350f;">
+                        <?= htmlspecialchars($tip) ?>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
             <?php endif; ?>
@@ -2741,7 +2932,7 @@ RAW Response:
             <?php if (DEBUG_MODE && isset($paymentResult['debug'])): ?>
             <div class="debug-wrap" style="margin-top:16px;">
                 <button class="debug-btn" onclick="toggleDebug('dbgPay')">
-                    🔧 Debug: Payment Request / Response ISO 8583 (MTI=200)
+                    🔧 Debug: Payment Request / Response ISO 8583 (MTI=002)
                     <span id="dbgPay-icon">▼</span>
                 </button>
                 <div class="debug-content" id="dbgPay">
@@ -2757,7 +2948,7 @@ Sukses     : <?= ($paymentResult['debug']['step1_get_token']['success'] ?? false
 HTTP Code  : <?= htmlspecialchars((string)($paymentResult['debug']['step1_get_token']['raw']['http_code'] ?? '-')) ?>
 
 
-<span class="dc">━━ STEP 2: ISO 8583 REQUEST (MTI=200, DE003=211041) ━━</span>
+<span class="dc">━━ STEP 2: ISO 8583 REQUEST (MTI=002, DE003=211041) ━━</span>
 <?= htmlspecialchars(json_encode($paymentResult['debug']['step2_iso_request'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>
 
 
@@ -2786,7 +2977,7 @@ RAW Response:
     <?php endif; ?>
 
     <div class="footer">
-        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.39 &mdash;
+        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.40 &mdash;
         PHP <?= PHP_VERSION ?> &mdash; <?= SNow() ?> WIB
     </div>
 
