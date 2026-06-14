@@ -1146,12 +1146,255 @@ function inquiryTransferBank(array $params): array {
 }
 
 // ============================================================
+// PAYMENT (PAYTFDANA / PAYLLG / PAYRTGS) — FUNGSI EKSEKUSI
+// ============================================================
+
+/**
+ * buildDE048Payment — bangun DE048 untuk request PAYMENT (MTI=200)
+ *
+ * Format:
+ *   "{prefix}*1001*PAY{JENIS}~~{kodeBank}*0"
+ * Contoh:
+ *   TFDANA : "0601*1001*PAYTFDANA~~CENAIDJA*0"
+ *   LLG    : "0201*1001*PAYLLG~~CENAIDJA*0"
+ *   RTGS   : "0801*1001*PAYRTGS~~CENAIDJA*0"
+ *
+ * Part1   = kode kategori (prefix nominal — tetap diisi nominal saat PAY)
+ * Part2   = kode produk internal (1001)
+ * TrxCode = PAY{JENIS}~~{kodeBank}  (PAY bukan INQ)
+ * *0      = margin (0 = tanpa margin tambahan)
+ */
+function buildDE048Payment(string $jenisTF, string $kodeBank, int $nominal = 0): string {
+    $kodeBank = strtoupper(trim($kodeBank));
+    if (empty($kodeBank)) $kodeBank = 'BLTRFAG';
+
+    // Prefix nominal: sama dengan inquiry
+    $prefixMap = [
+        'TFDANA' => '0601',
+        'LLG'    => '0201',
+        'RTGS'   => '0801',
+    ];
+    $pfx = $prefixMap[strtoupper($jenisTF)] ?? '0601';
+
+    return "{$pfx}*1001*PAY{$jenisTF}~~{$kodeBank}*0";
+}
+
+/**
+ * buildISO8583PaymentRequest — bangun ISO 8583 request untuk PAYMENT (MTI=200)
+ *
+ * Sesuai source mbanking.controller.php → mBanking() → SendHTTPPost ke CBS.
+ * CBS yang kemudian memanggil PermataSNAP::ReceiverHome (MTI=022) untuk eksekusi.
+ *
+ * Perbedaan utama dari Inquiry:
+ *   MTI    = "200"    (bukan "010")
+ *   DE003  = "211041" (bukan "231041") — DE003_TRX_PASCA_2
+ *   DE004  = nominal transfer aktual (12 digit)
+ *   DE039  = "00"     (sinyal konfirmasi dari nasabah)
+ *   DE048  = "{pfx}*1001*PAY{JENIS}~~{kodeBank}*0"
+ *
+ * @param array  $params          Field-field dari form (sama dengan inquiry)
+ * @param string $accessToken     Token OAuth
+ * @param int    $biayaAdmin      Biaya admin dari response inquiry (untuk DE102/feeAssist)
+ */
+function buildISO8583PaymentRequest(array $params, string $accessToken, int $biayaAdmin = 0): array {
+    $jenisTF       = strtoupper($params['jenis_transfer'] ?? 'TFDANA');
+    $nomorRekening = preg_replace('/\D/', '', $params['nomor_rekening'] ?? '');
+    $kodeBank      = $params['kode_bank'] ?? '';
+    $nominal       = (int)preg_replace('/\D/', '', $params['nominal'] ?? '0');
+
+    // DE004: nominal transfer dalam format 12 digit (10 digit + 2 desimal "00")
+    $de004 = str_pad($nominal, 10, '0', STR_PAD_LEFT) . '00';
+
+    // DE012: HHmm sekarang
+    $de012 = date('Hi');
+
+    // DE013: MMDD (sama dengan inquiry — sesuai source controller)
+    $de013 = date('md');
+
+    // DE037: RRN baru (harus berbeda dari inquiry — transaksi berbeda)
+    $de037 = date('His') . str_pad((string)mt_rand(1, 999999), 6, '0', STR_PAD_LEFT);
+
+    // DE039: "00" → sinyal konfirmasi nasabah (nasabah menyetujui)
+    $de039 = '00';
+
+    // DE048: PAY (bukan INQ) + kode bank Assist/SWIFT
+    $kodeBankDE048 = strtoupper(trim($params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''));
+    $de048 = buildDE048Payment($jenisTF, $kodeBankDE048, $nominal);
+
+    // DE052: PIN block (64 zero — untuk non-PIN transaction via middleware)
+    $de052 = str_repeat('0', 64);
+
+    // DE061: SIM Serial / device identifier agen
+    $de061 = DE061_SIM_SERIAL;
+
+    // DE102: nomor rekening tujuan (konfirmasi sama dengan inquiry)
+    $de102 = $nomorRekening;
+
+    // DE103: kode bank BI tujuan
+    $de103 = $kodeBank;
+
+    $msg = [
+        'DE003' => '211041',   // processing code payment (DE003_TRX_PASCA_2)
+        'DE004' => $de004,     // nominal transfer
+        'DE012' => $de012,
+        'DE013' => $de013,
+        'DE037' => $de037,
+        'DE039' => $de039,     // "00" = konfirmasi
+        'DE044' => '0',
+        'DE048' => $de048,     // PAYTFDANA / PAYLLG / PAYRTGS
+        'DE052' => $de052,
+        'DE061' => $de061,
+        'DE102' => $de102,
+        'DE103' => $de103,
+    ];
+
+    return [
+        'MTI' => '200',        // DIGITAL_BANK (payment/debet)
+        'MSG' => $msg,
+    ];
+}
+
+/**
+ * sendPaymentRequest — kirim request payment ke switching (/mobile-digital)
+ *
+ * Sama persis dengan sendInquiryRequest, hanya isoRequest berbeda (MTI=200).
+ * Switching meneruskan ke CBS; CBS yang eksekusi transfer via Permata SNAP.
+ */
+function sendPaymentRequest(array $isoRequest, string $accessToken): array {
+    $cB      = json_encode($isoRequest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $deviceId = DE061_SIM_SERIAL
+        ?: ($_SERVER['SERVER_ADDR'] ?? '')
+        ?: (KODE_AGEN ?: md5(gethostname()));
+
+    $postFields = http_build_query([
+        'cCode'         => $cB,
+        'DEVICEID'      => $deviceId,
+        'PLATFORM'      => 'android',
+        'VERSIAPLIKASI' => '1.2.6',
+    ]);
+
+    $headers = [
+        'Authorization: Bearer ' . $accessToken,
+        'Content-Type: application/x-www-form-urlencoded',
+    ];
+
+    $result = sendHttpPost(URL_DIGITAL, $postFields, $headers);
+    $result['iso_request'] = $isoRequest;
+    $result['body_signed'] = $postFields;
+    return $result;
+}
+
+/**
+ * parsePaymentResponse — parse response ISO 8583 untuk transaksi payment
+ *
+ * Sama dengan parseISO8583Response untuk inquiry:
+ *   - Strip PHP Notice HTML sebelum JSON
+ *   - Unwrap outer {"status":true,"data":"..."} wrapper
+ *   - Normalisasi DE039 → RC, DE048 → MSG
+ *
+ * Response sukses payment biasanya mengandung:
+ *   DE039 = "00"
+ *   DE048 = nomor referensi / SN transaksi
+ */
+function parsePaymentResponse(array $httpResult): array {
+    // Gunakan kembali fungsi yang sama — logika identik
+    return parseISO8583Response($httpResult);
+}
+
+/**
+ * paymentTransferBank — fungsi utama eksekusi transfer setelah inquiry sukses
+ *
+ * Flow:
+ *   Step 1: Ambil token (reuse cache dari inquiry jika masih valid)
+ *   Step 2: Bangun ISO 8583 MTI=200 dengan DE003=211041 (PAYTFDANA/etc.)
+ *   Step 3: Kirim POST ke /mobile-digital
+ *   Step 4: Parse response — RC=00 berarti transfer berhasil
+ *
+ * @param array $params  Harus mengandung semua field inquiry + 'nominal' wajib diisi
+ * @param int   $biayaAdmin  Biaya admin dari inquiry (Rp, bukan DE004 raw)
+ */
+function paymentTransferBank(array $params, int $biayaAdmin = 0): array {
+    $debug = [];
+
+    // ── Validasi: nominal wajib diisi untuk payment ──────────
+    $nominal = (int)preg_replace('/\D/', '', $params['nominal'] ?? '0');
+    if ($nominal <= 0) {
+        return [
+            'success' => false,
+            'step'    => 'validate',
+            'rc'      => 'XV',
+            'message' => 'Nominal transfer wajib diisi dan harus lebih dari 0 untuk melakukan payment.',
+            'debug'   => $debug,
+        ];
+    }
+
+    // ── Step 1: Ambil Token (reuse cache) ─────────────────────
+    $tokenResult = getAccessToken();
+    $debug['step1_get_token'] = $tokenResult;
+
+    if (!$tokenResult['success']) {
+        return [
+            'success' => false,
+            'step'    => 'get_token',
+            'rc'      => 'XT',
+            'message' => 'Gagal mendapatkan token: ' . ($tokenResult['error'] ?? 'Unknown'),
+            'debug'   => $debug,
+        ];
+    }
+    $accessToken = $tokenResult['token'];
+
+    // ── Step 2: Bangun ISO 8583 MTI=200 ───────────────────────
+    $isoRequest = buildISO8583PaymentRequest($params, $accessToken, $biayaAdmin);
+    $debug['step2_iso_request'] = $isoRequest;
+
+    // ── Step 3: Kirim ke Digital Server ───────────────────────
+    $httpResult = sendPaymentRequest($isoRequest, $accessToken);
+    $debug['step3_http_result'] = $httpResult;
+
+    // ── Step 4: Parse Response ─────────────────────────────────
+    $isoResponse = parsePaymentResponse($httpResult);
+    $debug['step4_iso_response'] = $isoResponse;
+
+    $rc      = $isoResponse['RC']  ?? $isoResponse['DE039'] ?? 'XT';
+    $msgRaw  = $isoResponse['MSG'] ?? $isoResponse['DE048'] ?? '';
+    $success = ($rc === '00');
+
+    // Nomor referensi / SN dari response (DE048 saat payment sukses)
+    $nomorRef = is_string($msgRaw) ? $msgRaw : '';
+
+    // DE004 response = total yang didebet (nominal + biaya)
+    $de004Resp = $isoResponse['DE004'] ?? '000000000000';
+    $totalDebet = strlen($de004Resp) >= 3 ? (int)substr($de004Resp, 0, -2) : 0;
+
+    return [
+        'success'         => $success,
+        'step'            => 'payment',
+        'rc'              => $rc,
+        'message'         => $nomorRef ?: ($success ? 'Transfer berhasil diproses' : 'Transfer gagal'),
+        'nomor_referensi' => $nomorRef,
+        'nominal'         => $nominal,
+        'biaya_admin'     => $biayaAdmin,
+        'total_debet'     => $totalDebet ?: ($nominal + $biayaAdmin),
+        'jenis_transfer'  => strtoupper($params['jenis_transfer'] ?? 'TFDANA'),
+        'beneficiary'     => [
+            'account_no'   => preg_replace('/\D/', '', $params['nomor_rekening'] ?? ''),
+            'account_name' => $params['beneficiary_name']  ?? '-',
+            'bank_code'    => $params['beneficiary_bank_code'] ?? ($params['kode_bank'] ?? ''),
+            'bank_name'    => $params['beneficiary_bank_name'] ?? ($params['nama_bank']  ?? ''),
+        ],
+        'token_from_cache'=> $tokenResult['from_cache'] ?? false,
+        'debug'           => $debug,
+    ];
+}
+
+// ============================================================
 // HANDLE POST REQUEST
 // ============================================================
 $result       = null;
 $errorMessage = '';
 $formData     = [];
 
+// ── Handler: Inquiry ──────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'inquiry') {
 
     $formData = [
@@ -1184,6 +1427,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'inqui
         $errorMessage = '⚠️ Kredensial OAuth belum dikonfigurasi! Buat file .assist.env dengan isi: OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_USERNAME, OAUTH_PASSWORD.';
     } else {
         $result = inquiryTransferBank($formData);
+    }
+}
+
+// ── Handler: Payment (eksekusi transfer setelah konfirmasi) ────
+$paymentResult    = null;
+$paymentError     = '';
+$paymentFormData  = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'payment') {
+
+    // Ambil semua field yang diteruskan dari form konfirmasi
+    $paymentFormData = [
+        'nomor_rekening'      => trim($_POST['nomor_rekening']      ?? ''),
+        'kode_bank'           => trim($_POST['kode_bank']           ?? ''),
+        'kode_bank_de048'     => strtoupper(trim($_POST['kode_bank_de048']  ?? '')),
+        'nama_bank'           => trim($_POST['nama_bank']           ?? ''),
+        'nominal'             => trim($_POST['nominal']             ?? '0'),
+        'jenis_transfer'      => strtoupper(trim($_POST['jenis_transfer']  ?? 'TFDANA')),
+        // Data beneficiary dari inquiry — diteruskan sebagai hidden field
+        'beneficiary_name'    => trim($_POST['beneficiary_name']    ?? ''),
+        'beneficiary_bank_code' => trim($_POST['beneficiary_bank_code'] ?? ''),
+        'beneficiary_bank_name' => trim($_POST['beneficiary_bank_name'] ?? ''),
+        'biaya_admin'         => (int)preg_replace('/\D/', '', $_POST['biaya_admin'] ?? '0'),
+    ];
+
+    // Validasi wajib
+    $nominal = (int)preg_replace('/\D/', '', $paymentFormData['nominal']);
+    if (empty($paymentFormData['nomor_rekening'])) {
+        $paymentError = 'Nomor rekening tujuan tidak boleh kosong.';
+    } elseif (empty($paymentFormData['kode_bank'])) {
+        $paymentError = 'Kode bank tujuan tidak boleh kosong.';
+    } elseif ($nominal <= 0) {
+        $paymentError = 'Nominal transfer harus lebih dari 0.';
+    } elseif (KODE_AGEN === '') {
+        $paymentError = '⚠️ KODE_AGEN tidak terdeteksi!';
+    } elseif (OAUTH_CLIENT_ID === '' && OAUTH_USERNAME === '') {
+        $paymentError = '⚠️ Kredensial OAuth belum dikonfigurasi!';
+    } else {
+        $paymentResult = paymentTransferBank($paymentFormData, $paymentFormData['biaya_admin']);
     }
 }
 
@@ -1567,6 +1849,133 @@ $mapDE048Js   = $mapKodeBankDE048;
             animation: spin .7s linear infinite;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Konfirmasi Payment ── */
+        .confirm-box {
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 8px 36px rgba(0,0,0,.18);
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        .confirm-header {
+            background: linear-gradient(90deg, #b45309, #f59e0b);
+            color: #fff;
+            padding: 15px 22px;
+            display: flex; align-items: center; gap: 10px;
+            font-size: 1rem; font-weight: 800;
+        }
+        .confirm-header .ch-icon {
+            width: 32px; height: 32px;
+            background: rgba(255,255,255,.22);
+            border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px;
+        }
+        .confirm-body { padding: 24px; }
+        .confirm-summary {
+            background: #fffbeb;
+            border: 1.5px solid #fcd34d;
+            border-radius: 12px;
+            padding: 18px 20px;
+            margin-bottom: 18px;
+        }
+        .confirm-summary .cs-row {
+            display: flex; justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid #fef3c7;
+            font-size: .9rem;
+        }
+        .confirm-summary .cs-row:last-child { border-bottom: none; }
+        .confirm-summary .cs-label { color: #78350f; font-weight: 600; }
+        .confirm-summary .cs-val   { color: #1c1917; font-weight: 700; font-family: monospace; }
+        .confirm-summary .cs-val.big {
+            font-size: 1.15rem; color: #b45309;
+        }
+        .confirm-warning {
+            background: #fef2f2;
+            border: 1.5px solid #fca5a5;
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin-bottom: 18px;
+            font-size: .85rem;
+            color: #991b1b;
+            display: flex; gap: 10px; align-items: flex-start;
+        }
+        .confirm-warning .cw-ic { font-size: 1.2rem; flex-shrink: 0; margin-top: 1px; }
+        .confirm-btn-row {
+            display: flex; gap: 14px;
+        }
+        @media (max-width: 480px) { .confirm-btn-row { flex-direction: column; } }
+        .btn-cancel {
+            flex: 1;
+            padding: 13px;
+            background: #f1f5f9;
+            color: #374151;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            font-size: .95rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background .15s;
+        }
+        .btn-cancel:hover { background: #e2e8f0; }
+        .btn-pay {
+            flex: 2;
+            padding: 13px;
+            background: linear-gradient(135deg, #b45309, #f59e0b);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            font-size: .95rem;
+            font-weight: 800;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+            transition: opacity .15s;
+        }
+        .btn-pay:hover   { opacity: .9; }
+        .btn-pay:disabled { opacity: .55; cursor: not-allowed; }
+
+        /* ── Payment Result ── */
+        .pay-result-wrap { margin-top: 20px; }
+        .pay-result-header {
+            padding: 16px 22px;
+            font-size: 1.05rem; font-weight: 800;
+            border-radius: 16px 16px 0 0;
+            display: flex; align-items: center;
+        }
+        .pay-result-header.ok   { background: linear-gradient(90deg, #047857, #10b981); color: #fff; }
+        .pay-result-header.fail { background: linear-gradient(90deg, #b91c1c, #dc2626); color: #fff; }
+        .pay-result-body {
+            background: #fff;
+            border: 1.5px solid #e2e8f0;
+            border-top: none;
+            border-radius: 0 0 16px 16px;
+            padding: 24px;
+            box-shadow: 0 8px 36px rgba(0,0,0,.12);
+        }
+        .pay-receipt {
+            background: #f0fdf4;
+            border: 1.5px solid #86efac;
+            border-radius: 12px;
+            padding: 20px 22px;
+            margin-bottom: 16px;
+        }
+        .pay-receipt .pr-row {
+            display: flex; justify-content: space-between;
+            padding: 7px 0;
+            border-bottom: 1px dashed #bbf7d0;
+            font-size: .9rem;
+        }
+        .pay-receipt .pr-row:last-child { border-bottom: none; }
+        .pay-receipt .pr-label { color: #166534; font-weight: 600; }
+        .pay-receipt .pr-val   { color: #14532d; font-weight: 700; font-family: monospace; }
+        .pay-receipt .pr-val.ref {
+            background: #dcfce7; padding: 2px 8px; border-radius: 5px;
+            font-size: .85rem; letter-spacing: .3px;
+        }
+        .pay-receipt .pr-val.amount { font-size: 1.1rem; color: #047857; }
 
         /* ── Footer ── */
         .footer { text-align: center; color: rgba(255,255,255,.55); font-size: .8rem; padding: 18px 0 8px; }
@@ -2052,6 +2461,109 @@ DE061_SIM_SERIAL=</pre>
                 <?php endif; ?>
             </div>
 
+            <?php
+            // ── Tampilkan form konfirmasi payment jika nominal > 0 ──
+            $_nominal      = (int)preg_replace('/\D/', '', $formData['nominal'] ?? '0');
+            $_biayaAdmin   = (int)($result['biaya_admin'] ?? 0);
+            $_totalDebet   = $_nominal + $_biayaAdmin;
+            $_beneNo       = $result['beneficiary']['account_no']   ?? '';
+            $_beneName     = $result['beneficiary']['account_name'] ?? '-';
+            $_beneBank     = $result['beneficiary']['bank_name']    ?? '-';
+            $_beneBankCode = $result['beneficiary']['bank_code']    ?? '';
+            $_jenisTF      = $result['jenis_transfer']              ?? 'TFDANA';
+            $_de048        = $result['de048']                       ?? '';
+            ?>
+
+            <?php if ($_nominal > 0): ?>
+            <!-- ── Konfirmasi Payment ── -->
+            <div class="confirm-box" style="margin-top:20px;" id="confirmBox">
+                <div class="confirm-header">
+                    <div class="ch-icon">💸</div>
+                    Konfirmasi Eksekusi Transfer
+                    <span style="margin-left:auto;background:rgba(255,255,255,.2);border-radius:6px;padding:2px 10px;font-size:.72rem;letter-spacing:.3px;">
+                        ISO 8583 MTI=200
+                    </span>
+                </div>
+                <div class="confirm-body">
+
+                    <div class="confirm-warning">
+                        <span class="cw-ic">⚠️</span>
+                        <div>
+                            <strong>Peringatan:</strong> Tombol <em>Eksekusi Transfer</em> akan mengirimkan
+                            request <strong>MTI=200 / DE003=211041 (PAYTFDANA)</strong> ke switching.
+                            Transaksi ini bersifat <strong>irreversible</strong> — pastikan rekening tujuan,
+                            nominal, dan bank sudah benar sebelum melanjutkan.
+                        </div>
+                    </div>
+
+                    <div class="confirm-summary">
+                        <div class="cs-row">
+                            <span class="cs-label">Nama Penerima</span>
+                            <span class="cs-val"><?= htmlspecialchars($_beneName) ?></span>
+                        </div>
+                        <div class="cs-row">
+                            <span class="cs-label">Nomor Rekening</span>
+                            <span class="cs-val"><?= htmlspecialchars($_beneNo) ?></span>
+                        </div>
+                        <div class="cs-row">
+                            <span class="cs-label">Bank Tujuan</span>
+                            <span class="cs-val">[<?= htmlspecialchars($_beneBankCode) ?>] <?= htmlspecialchars($_beneBank) ?></span>
+                        </div>
+                        <div class="cs-row">
+                            <span class="cs-label">Jenis Transfer</span>
+                            <span class="cs-val"><?= htmlspecialchars($_jenisTF) ?></span>
+                        </div>
+                        <div class="cs-row">
+                            <span class="cs-label">Nominal Transfer</span>
+                            <span class="cs-val">Rp <?= number_format($_nominal, 0, ',', '.') ?></span>
+                        </div>
+                        <div class="cs-row">
+                            <span class="cs-label">Biaya Admin</span>
+                            <span class="cs-val">Rp <?= number_format($_biayaAdmin, 0, ',', '.') ?></span>
+                        </div>
+                        <div class="cs-row">
+                            <span class="cs-label">Total Debet</span>
+                            <span class="cs-val big">Rp <?= number_format($_totalDebet, 0, ',', '.') ?></span>
+                        </div>
+                        <div class="cs-row" style="font-size:.78rem;">
+                            <span class="cs-label">DE048 (request)</span>
+                            <span class="cs-val" style="font-size:.78rem;"><?= htmlspecialchars(buildDE048Payment($_jenisTF, $formData['kode_bank_de048'] ?? $formData['kode_bank'] ?? '', $_nominal)) ?></span>
+                        </div>
+                    </div>
+
+                    <form method="POST" id="paymentForm" onsubmit="handlePaySubmit(event)">
+                        <input type="hidden" name="action"               value="payment">
+                        <input type="hidden" name="nomor_rekening"       value="<?= htmlspecialchars($_beneNo) ?>">
+                        <input type="hidden" name="kode_bank"            value="<?= htmlspecialchars($formData['kode_bank'] ?? '') ?>">
+                        <input type="hidden" name="kode_bank_de048"      value="<?= htmlspecialchars($formData['kode_bank_de048'] ?? '') ?>">
+                        <input type="hidden" name="nama_bank"            value="<?= htmlspecialchars($_beneBank) ?>">
+                        <input type="hidden" name="nominal"              value="<?= htmlspecialchars((string)$_nominal) ?>">
+                        <input type="hidden" name="jenis_transfer"       value="<?= htmlspecialchars($_jenisTF) ?>">
+                        <input type="hidden" name="beneficiary_name"     value="<?= htmlspecialchars($_beneName) ?>">
+                        <input type="hidden" name="beneficiary_bank_code" value="<?= htmlspecialchars($_beneBankCode) ?>">
+                        <input type="hidden" name="beneficiary_bank_name" value="<?= htmlspecialchars($_beneBank) ?>">
+                        <input type="hidden" name="biaya_admin"          value="<?= htmlspecialchars((string)$_biayaAdmin) ?>">
+
+                        <div class="confirm-btn-row">
+                            <button type="button" class="btn-cancel" onclick="document.getElementById('confirmBox').style.display='none'">
+                                ✖ Batal
+                            </button>
+                            <button type="submit" class="btn-pay" id="payBtn">
+                                <span id="payBtnText">💸 Eksekusi Transfer</span>
+                                <div class="spinner" id="paySpinner"></div>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            <?php else: ?>
+            <div style="margin-top:12px;padding:10px 14px;background:#fef9ec;border:1px dashed #fbbf24;border-radius:8px;font-size:.83rem;color:#92400e;">
+                💡 <strong>Untuk melanjutkan ke eksekusi transfer</strong>, isi field
+                <em>Nominal Transfer</em> di form atas lalu ulangi inquiry.
+                Setelah inquiry sukses, form konfirmasi payment akan muncul di sini.
+            </div>
+            <?php endif; ?>
+
             <?php else: ?>
             <div class="alert alert-error">
                 <span class="al-ic">🚫</span>
@@ -2129,8 +2641,152 @@ RAW Response:
     </div>
     <?php endif; ?>
 
+    <!-- ══════════════════════════════════════════════════════════
+         PAYMENT RESULT CARD
+         Ditampilkan setelah user submit form konfirmasi (action=payment)
+    ══════════════════════════════════════════════════════════ -->
+    <?php if ($paymentResult !== null || $paymentError !== ''): ?>
+    <div class="pay-result-wrap">
+
+        <?php if ($paymentError !== ''): ?>
+        <!-- Error validasi sebelum kirim ke server -->
+        <div class="pay-result-header fail">
+            ❌ Payment Gagal — Validasi Input
+        </div>
+        <div class="pay-result-body">
+            <div class="confirm-warning">
+                <span class="cw-ic">🚫</span>
+                <div><?= htmlspecialchars($paymentError) ?></div>
+            </div>
+        </div>
+
+        <?php elseif ($paymentResult !== null): ?>
+        <div class="pay-result-header <?= $paymentResult['success'] ? 'ok' : 'fail' ?>">
+            <?= $paymentResult['success'] ? '✅ Transfer Berhasil Dieksekusi' : '❌ Transfer Gagal' ?>
+            <span style="margin-left:auto;background:rgba(255,255,255,.2);border-radius:6px;padding:2px 10px;font-size:.78rem;">
+                RC: <?= htmlspecialchars($paymentResult['rc'] ?? '-') ?>
+            </span>
+        </div>
+        <div class="pay-result-body">
+
+            <?php if ($paymentResult['success']): ?>
+            <!-- Receipt sukses -->
+            <div class="pay-receipt">
+                <div class="pr-row">
+                    <span class="pr-label">Status</span>
+                    <span class="pr-val" style="color:#047857;font-size:.95rem;">✅ SUKSES</span>
+                </div>
+                <div class="pr-row">
+                    <span class="pr-label">Response Code</span>
+                    <span class="pr-val">RC = <?= htmlspecialchars($paymentResult['rc'] ?? '-') ?></span>
+                </div>
+                <?php if (!empty($paymentResult['nomor_referensi'])): ?>
+                <div class="pr-row">
+                    <span class="pr-label">No. Referensi / SN</span>
+                    <span class="pr-val ref"><?= htmlspecialchars($paymentResult['nomor_referensi']) ?></span>
+                </div>
+                <?php endif; ?>
+                <div class="pr-row">
+                    <span class="pr-label">Nama Penerima</span>
+                    <span class="pr-val"><?= htmlspecialchars($paymentResult['beneficiary']['account_name'] ?? '-') ?></span>
+                </div>
+                <div class="pr-row">
+                    <span class="pr-label">Rekening Tujuan</span>
+                    <span class="pr-val"><?= htmlspecialchars($paymentResult['beneficiary']['account_no'] ?? '-') ?></span>
+                </div>
+                <div class="pr-row">
+                    <span class="pr-label">Bank Tujuan</span>
+                    <span class="pr-val">
+                        [<?= htmlspecialchars($paymentResult['beneficiary']['bank_code'] ?? '-') ?>]
+                        <?= htmlspecialchars($paymentResult['beneficiary']['bank_name'] ?? '-') ?>
+                    </span>
+                </div>
+                <div class="pr-row">
+                    <span class="pr-label">Jenis Transfer</span>
+                    <span class="pr-val"><?= htmlspecialchars($paymentResult['jenis_transfer'] ?? '-') ?></span>
+                </div>
+                <div class="pr-row">
+                    <span class="pr-label">Nominal Transfer</span>
+                    <span class="pr-val">Rp <?= number_format($paymentResult['nominal'] ?? 0, 0, ',', '.') ?></span>
+                </div>
+                <div class="pr-row">
+                    <span class="pr-label">Biaya Admin</span>
+                    <span class="pr-val">Rp <?= number_format($paymentResult['biaya_admin'] ?? 0, 0, ',', '.') ?></span>
+                </div>
+                <div class="pr-row">
+                    <span class="pr-label">Total Didebet</span>
+                    <span class="pr-val amount">Rp <?= number_format($paymentResult['total_debet'] ?? 0, 0, ',', '.') ?></span>
+                </div>
+                <?php if ($paymentResult['token_from_cache'] ?? false): ?>
+                <div class="pr-row" style="font-size:.78rem;">
+                    <span class="pr-label">Token</span>
+                    <span class="pr-val">dari cache (reuse)</span>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <?php else: ?>
+            <!-- Gagal -->
+            <div class="confirm-warning">
+                <span class="cw-ic">🚫</span>
+                <div>
+                    <strong>Step:</strong> <?= htmlspecialchars($paymentResult['step'] ?? '-') ?><br>
+                    <strong>RC:</strong> <?= htmlspecialchars($paymentResult['rc'] ?? '-') ?><br>
+                    <strong>Pesan:</strong> <?= htmlspecialchars($paymentResult['message'] ?? '-') ?>
+                </div>
+            </div>
+            <?php endif; ?>
+
+            <!-- ── Debug Panel Payment ── -->
+            <?php if (DEBUG_MODE && isset($paymentResult['debug'])): ?>
+            <div class="debug-wrap" style="margin-top:16px;">
+                <button class="debug-btn" onclick="toggleDebug('dbgPay')">
+                    🔧 Debug: Payment Request / Response ISO 8583 (MTI=200)
+                    <span id="dbgPay-icon">▼</span>
+                </button>
+                <div class="debug-content" id="dbgPay">
+<span class="dc">━━ STEP 1: GET TOKEN ━━</span>
+Token URL  : <?= htmlspecialchars(URL_GET_TOKEN) ?>
+
+Kode Agen  : <?= htmlspecialchars(KODE_AGEN ?: '(kosong)') ?>
+
+Dari Cache : <?= ($paymentResult['debug']['step1_get_token']['from_cache'] ?? false) ? 'YA' : 'TIDAK' ?>
+
+Sukses     : <?= ($paymentResult['debug']['step1_get_token']['success'] ?? false) ? 'YA' : 'TIDAK' ?>
+
+HTTP Code  : <?= htmlspecialchars((string)($paymentResult['debug']['step1_get_token']['raw']['http_code'] ?? '-')) ?>
+
+
+<span class="dc">━━ STEP 2: ISO 8583 REQUEST (MTI=200, DE003=211041) ━━</span>
+<?= htmlspecialchars(json_encode($paymentResult['debug']['step2_iso_request'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>
+
+
+<span class="dc">━━ STEP 3: HTTP POST ke Digital Server ━━</span>
+URL        : <?= htmlspecialchars($paymentResult['debug']['step3_http_result']['url'] ?? '') ?>
+
+Body Sent  : <?= htmlspecialchars($paymentResult['debug']['step3_http_result']['body_signed'] ?? '') ?>
+
+HTTP Code  : <?= htmlspecialchars((string)($paymentResult['debug']['step3_http_result']['http_code'] ?? '')) ?>  (<?= $paymentResult['debug']['step3_http_result']['elapsed_ms'] ?? 0 ?>ms)
+
+RAW Response:
+<?= htmlspecialchars($paymentResult['debug']['step3_http_result']['raw'] ?? '(kosong)') ?>
+
+
+<span class="dc">━━ STEP 4: ISO 8583 RESPONSE PARSED ━━</span>
+<?= htmlspecialchars(json_encode($paymentResult['debug']['step4_iso_response'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>
+
+                </div>
+            </div>
+            <?php endif; ?>
+
+        </div>
+        <?php endif; ?>
+
+    </div>
+    <?php endif; ?>
+
     <div class="footer">
-        Inquiry Transfer Bank — SIS/Assist Switching Middleware v1.6.39 &mdash;
+        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.39 &mdash;
         PHP <?= PHP_VERSION ?> &mdash; <?= SNow() ?> WIB
     </div>
 
@@ -2166,6 +2822,16 @@ function handleSubmit(e) {
     document.getElementById('btnText').textContent = 'Memproses...';
     document.getElementById('spinner').style.display = 'block';
     document.getElementById('submitBtn').disabled = true;
+    return true;
+}
+
+function handlePaySubmit(e) {
+    const btn  = document.getElementById('payBtn');
+    const txt  = document.getElementById('payBtnText');
+    const spin = document.getElementById('paySpinner');
+    if (txt)  txt.textContent = 'Memproses...';
+    if (spin) spin.style.display = 'block';
+    if (btn)  btn.disabled = true;
     return true;
 }
 
