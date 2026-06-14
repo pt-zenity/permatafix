@@ -140,8 +140,8 @@ function parseLocalConfig(string $assistRoot): array {
 /**
  * Deteksi KODE_AGEN dan MFTFI dari nama file cache snap_tf_bank_permata.
  * Pattern nama: cds-auth-a-{KodeAgen}_{mftfi}-snap_tf_bank_permata.cache
- * Contoh: cds-auth-a-000268_0017-snap_tf_bank_permata.cache
- *   → KodeAgen = "A-000268", mftfi = "0017"
+ * Contoh: cds-auth-a-000300_BPRPAS-snap_tf_bank_permata.cache
+ *   → KodeAgen = "A-000300", mftfi = "BPRPAS"
  */
 function detectFromCacheTF(string $assistRoot): array {
     $cacheDir = $assistRoot . '/storage/cds/cache';
@@ -166,9 +166,9 @@ function detectFromCacheTF(string $assistRoot): array {
     // Parse: cds-auth-a-{numerik}_{mftfi}-snap_*.cache
     if (preg_match('/^cds-auth-a-(\d+)_(\w+)-snap_/', $fname, $m)) {
         return [
-            'kode_agen'  => 'A-' . $m[1],   // ex: "A-000268" / "A-000300"
+            'kode_agen'  => 'A-' . $m[1],   // ex: "A-000300" / "A-000268"
             'mftfi'      => $m[2],            // ex: "0017" / "0024"
-            'raw_kode'   => $m[1],            // ex: "000268" / "000300"
+            'raw_kode'   => $m[1],            // ex: "000300" / "000268"
             'cache_file' => $fname,           // nama file asli untuk info
         ];
     }
@@ -291,7 +291,7 @@ function detectAssistBprRoot(): string {
  *   auth_server_uri / base_url_auth → OAUTH_SERVER_URI (opsional)
  *
  * @param string $assistBprRoot  Path root assist-bpr.net (dari detectAssistBprRoot())
- * @param string $rawKode        Kode numerik agen, mis. "000268" (dari cache filename)
+ * @param string $rawKode        Kode numerik agen, mis. "000300" (dari cache filename)
  *
  * Urutan pencarian kandidat:
  *   1. {envDir}/{rawKode}_.env          — kode spesifik dari cache filename
