@@ -803,17 +803,17 @@ function getAccessToken(): array {
  *   INQLLG    : "0201*1001*INQLLG~~{kodeBank}"
  *   INQRTGS   : "0801*1001*INQRTGS~~{kodeBank}"
  *   INQBIFAST : "0602*1001*INQBIFAST~~{kodeBIFAST}~~{nominal}"
- *               kodeBIFAST = kolom KodeBIFAST di bank_code (mis. "CENAIDJAXXX")
+ *               kodeBIFAST = kolom KodeBIFAST di bank_code (mis. "CENAIDJA")
  *               nominal    = nominal transfer (diperlukan saat inquiry BI-FAST)
  *
  * Part1 = kode kategori, Part2 = kode produk internal, TrxCode = kode transaksi Assist
  * KodeBank  = kode bank tujuan:
  *   TFDANA/LLG/RTGS = kolom Kode di bank_code (SWIFT/alias Assist), mis. "CENAIDJA"
- *   BIFAST          = kolom KodeBIFAST di bank_code, mis. "CENAIDJAXXX" (BIC 11-digit)
+ *   BIFAST          = kolom KodeBIFAST di bank_code, mis. "CENAIDJA" (BIC8/BIC11)
  *
  * CATATAN: kode bank di DE048 adalah BUKAN kode numerik BI (DE103).
  *          Contoh TFDANA: DE103="014" → DE048 kodeBank="CENAIDJA"
- *          Contoh BIFAST: DE103="014" → DE048 kodeBIFAST="CENAIDJAXXX"
+ *          Contoh BIFAST: DE103="014" → DE048 kodeBIFAST="CENAIDJA"
  */
 function buildDE048(string $jenisTF, string $kodeBank = 'BLTRFAG', int $nominal = 0): string {
     $kodeBank = strtoupper(trim($kodeBank));
@@ -878,7 +878,7 @@ function buildISO8583Request(array $params, string $accessToken): array {
     // DE048: kode transaksi sesuai jenis transfer + kode bank tujuan (Kode di tabel bank_code)
     // kode_bank_de048 = kolom Kode di bank_code (alias Assist/SWIFT), mis. "BLTRFAG", "CENAIDJA"
     //   untuk TFDANA/LLG/RTGS: gunakan kolom Kode (BankPermataID/alias Assist)
-    //   untuk BIFAST          : gunakan kolom KodeBIFAST (BIC 11-digit, mis. "CENAIDJAXXX")
+    //   untuk BIFAST          : gunakan kolom KodeBIFAST (BIC8/BIC11, mis. "CENAIDJA")
     // kode_bank (DE103) = kode numerik BI, mis. "014" (BCA) — bisa berbeda dari DE048
     if ($jenisTF === 'BIFAST') {
         // BIFAST pakai kode_bank_bifast (KodeBIFAST), fallback ke kode_bank_de048
@@ -1294,8 +1294,8 @@ function rcDescription(string $rc): string {
  *   TFDANA : "0601*1001*PAYTFDANA~~CENAIDJA*0"
  *   LLG    : "0201*1001*PAYLLG~~CENAIDJA*0"
  *   RTGS   : "0801*1001*PAYRTGS~~CENAIDJA*0"
- *   BIFAST : "0602*1001*PAYBIFAST~~CENAIDJAXXX*0"
- *            kodeBank = kolom KodeBIFAST di bank_code (BIC 11-digit, mis. "CENAIDJAXXX")
+ *   BIFAST : "0602*1001*PAYBIFAST~~CENAIDJA*0"
+ *            kodeBank = kolom KodeBIFAST di bank_code (BIC8/BIC11, mis. "CENAIDJA")
  *
  * Part1   = kode kategori (prefix nominal — tetap diisi nominal saat PAY)
  * Part2   = kode produk internal (1001)
@@ -1733,12 +1733,14 @@ $mapKodeBankDE048 = [
 
 // Mapping kode numerik BI → KodeBIFAST (BIC 11-digit) untuk DE048 BIFAST
 // Kolom KodeBIFAST di tabel bank_code — format BIC11: {BANK}{CC}{LOC}{BRANCH}
-// mis. CENAIDJAXXX = CEN(BCA) A(Asia) IDJ(Indonesia) A(primary) XXX(HO)
+// mis. CENAIDJA = CEN(BCA) A(Asia) IDJ(Indonesia) A(primary) — BIC8 tanpa branch suffix
+// CATATAN: KodeBIFAST bisa BIC8 (8 karakter) ATAU BIC11 (11 karakter, suffix XXX = HO)
+// Nilai di bawah dikonfirmasi dari kolom KodeBIFAST tabel bank_code production.
 $mapKodeBankBIFAST = [
-    '008'    => 'BMRIIDJA',    // Bank Mandiri (BIC11 = BMRIIDJA ← beberapa bank pakai BIC8 saja)
+    '008'    => 'BMRIIDJA',    // Bank Mandiri
     '009'    => 'BNINIDJA',    // BNI
     '002'    => 'BRINIDJA',    // BRI
-    '014'    => 'CENAIDJAXXX', // BCA
+    '014'    => 'CENAIDJA',    // BCA — dikonfirmasi dari production DB (BIC8, bukan CENAIDJAXXX)
     '013'    => 'BBBAIDJA',    // Bank Permata
     '022'    => 'BIARINDJA',   // CIMB Niaga
     '016'    => 'MBBEIDJA',    // Maybank
@@ -2588,7 +2590,7 @@ DE061_SIM_SERIAL=</pre>
                     <div class="form-group" id="fieldBIFASTWrap" style="<?= ($formData['jenis_transfer'] ?? '') !== 'BIFAST' ? 'display:none;' : '' ?>">
                         <label style="color:#1d4ed8;">⚡ Kode Bank BI-FAST (KodeBIFAST) <span class="req">*</span></label>
                         <input type="text" name="kode_bank_bifast" id="kodeBankBIFAST"
-                            placeholder="Mis. CENAIDJAXXX, BNINIDJA, BMRIIDJA"
+                            placeholder="Mis. CENAIDJA, BNINIDJA, BMRIIDJA"
                             value="<?= htmlspecialchars($formData['kode_bank_bifast'] ?? '') ?>"
                             oninput="this.value=this.value.toUpperCase()">
                         <div class="field-hint" style="color:#1e40af;">
@@ -3178,7 +3180,7 @@ function handleJenisTransferChange() {
             if (hint) {
                 hint.innerHTML = '<span style="color:#dc2626;font-weight:600;">⚠️ Nilai <code>' + v + '</code> adalah kode numerik BI, bukan KodeBIFAST BIC!</span> '
                     + 'Jalankan: <code>SELECT KodeBIFAST FROM bank_code WHERE Kode=\'' + v + '\'</code> '
-                    + 'untuk mendapat BIC yang benar (mis. <code>CENAIDJAXXX</code>). '
+                    + 'untuk mendapat BIC yang benar (mis. <code>CENAIDJA</code> untuk BCA). '
                     + 'PHP akan auto-map dari <code>$mapKodeBankBIFAST</code> sebagai fallback.';
             }
             // Coba auto-map dari mapBIFAST
