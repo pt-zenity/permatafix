@@ -12,6 +12,106 @@ Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Tran
 | `hapusaktivasimbanking.php` | Script PHP single-file hapus aktivasi user mBanking — MTI=009/KT=51, warning banner + confirm 2 field |
 | `aktivasimbanking.php` | Script PHP single-file aktivasi user mBanking (v1 lama) — MTI=009/KT=50, kirim PIN via SMS/Email |
 | `aktivasimbanking2.php` | Script PHP single-file aktivasi user mBanking (v2 aktif) — MTI=009/KT=80, Kode Fasilitas + Email/SMS/WA |
+| `qrvpn.php` | QR Code Scanner + Generator + VPN Login — 3 tab, jsQR kamera, qrcode.js generate, cURL login portal |
+
+---
+
+## qrvpn.php — QR Code Scanner & Generator VPN (sesi 5C)
+
+Script PHP **single-file** dengan 3 tab fungsional untuk login VPN via QR Code.
+Tidak memerlukan dependency server-side — semua QR processing dilakukan di browser.
+
+### 3 Tab Utama
+
+| Tab | Fungsi |
+|-----|--------|
+| 📷 **Scan QR** | Kamera real-time + upload gambar → decode → auto-detect tipe → aksi |
+| ⚡ **Generate QR** | Form credential → build payload → render QR → download PNG |
+| 🔑 **Login VPN** | Form manual + PHP cURL ke VPN portal → tampilkan response/token/cookie |
+
+### Tab 1 — Scan QR
+
+```
+Browser getUserMedia → video stream → jsQR decode setiap 150ms
+  ↓
+Auto-deteksi tipe QR:
+  • URL (https://)    → tombol "Buka URL" + "Pakai sbg VPN URL"
+  • JSON Credential   → parse + tampilkan field + tombol "Auto Login"
+  • token=...         → ekstrak token + URL → tombol "Login dengan Token"
+  • vpn://...         → VPN scheme custom → tombol "Login VPN"
+  • Plain text        → copy + coba sebagai URL
+  ↓
+Riwayat scan → localStorage (10 entri, klik untuk re-display)
+Fallback: upload gambar PNG/JPG → jsQR decode client-side (tidak ke server)
+```
+
+**Format JSON credential yang dikenali:**
+```json
+{ "vpn": "https://vpn.company.com", "u": "username", "p": "password", "t": "token" }
+```
+
+### Tab 2 — Generate QR
+
+| Mode | Payload yang di-encode |
+|------|------------------------|
+| 🔗 URL | URL langsung: `https://vpn.company.com/login` |
+| 👤 Credential | JSON: `{"vpn":"...","u":"...","p":"...","t":"..."}` |
+| 🎫 Token | JSON: `{"vpn":"...","token":"eyJ..."}` |
+| ✏️ Custom | Teks/data bebas apapun |
+
+- Ukuran QR: 200 / 300 / 400 / 512 px
+- Error correction: L (7%) / M (15%) / Q (25%) / H (30%)
+- Download PNG langsung dari browser
+- Tombol **→ Login**: kirim credential ke Tab Login tanpa scan ulang
+
+### Tab 3 — Login VPN (PHP backend)
+
+```
+PHP cURL → POST ke VPN portal URL
+  ↓
+3 metode auth:
+  • Form POST   → username + password + token sebagai form data
+  • Bearer Token → Authorization: Bearer {token} header
+  • Basic Auth   → CURLOPT_USERPWD username:password
+  ↓
+Parse response:
+  • HTTP 301/302 → deteksi redirect URL (dashboard)
+  • JSON body    → ekstrak token/access_token dari response
+  • Set-Cookie   → tampilkan session cookie
+  • Body preview → 800 char pertama
+```
+
+**Deteksi sukses otomatis** (heuristic):
+- HTTP 302/301 redirect
+- Body mengandung kata: `dashboard`, `welcome`, `logout`, `success`
+
+### Library Client-side
+
+| Library | CDN | Fungsi |
+|---------|-----|--------|
+| `jsQR 1.4.0` | `cdn.jsdelivr.net/npm/jsqr@1.4.0` | Decode QR dari ImageData (kamera/gambar) |
+| `qrcode` | `cdn.jsdelivr.net/npm/qrcode` | Generate QR ke Canvas/PNG |
+| `Tailwind CSS` | `cdn.tailwindcss.com` | Styling |
+
+### Konfigurasi (atas file)
+
+```php
+define('VPN_PORTAL_URL',     'https://vpn.company.com/login');  // URL default
+define('VPN_TOKEN_ENDPOINT', 'https://vpn.company.com/api/auth'); // endpoint token
+define('VPN_DEFAULT_USER',   'admin');   // pre-fill username
+define('APP_TITLE',          'QR VPN'); // judul halaman
+```
+
+### Penggunaan
+
+1. Upload `qrvpn.php` ke web server (HTTPS **wajib** untuk akses kamera)
+2. Buka `https://server/qrvpn.php`
+3. **Scan**: klik Mulai Scan → arahkan kamera ke QR Code → hasil muncul otomatis
+4. **Generate**: pilih mode Credential → isi URL + user + pass → QR muncul real-time → Download
+5. **Login**: isi form atau auto-fill dari scan → klik Login → lihat response
+
+> **Catatan HTTPS**: `getUserMedia` (kamera) hanya bekerja di HTTPS atau `localhost`.
+> Di HTTP, tab Scan tidak bisa mengakses kamera — gunakan fallback Upload Gambar.
 
 ---
 
