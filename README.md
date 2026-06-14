@@ -10,6 +10,133 @@ Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Tran
 | `mbanking.controller.php` | Controller mBanking — fix PHP Notice "Undefined index: KT" (line 111) |
 | `mbanking_del.php` | Script PHP single-file deaktivasi user mBanking — MTI=009/KT=51, A-000300 |
 | `hapusaktivasimbanking.php` | Script PHP single-file hapus aktivasi user mBanking — MTI=009/KT=51, warning banner + confirm 2 field |
+| `aktivasimbanking.php` | Script PHP single-file aktivasi user mBanking (v1 lama) — MTI=009/KT=50, kirim PIN via SMS/Email |
+| `aktivasimbanking2.php` | Script PHP single-file aktivasi user mBanking (v2 aktif) — MTI=009/KT=80, Kode Fasilitas + Email/SMS/WA |
+
+---
+
+## aktivasimbanking.php — Aktivasi User mBanking KT=50 (sesi 5C)
+
+Script PHP **single-file** untuk mengaktivasi user mBanking via CBS — jalur lama KT=50.
+CBS akan generate PIN 6 digit dan mengirimkan ke user via SMS atau Email.
+
+### Perbedaan aktivasimbanking vs aktivasimbanking2
+
+| Aspek | `aktivasimbanking.php` (KT=50) | `aktivasimbanking2.php` (KT=80) |
+|-------|-------------------------------|----------------------------------|
+| CBS function | `RegisterDigital()` | `RegisterDigital_v2()` |
+| KT | 50 (TRX_MB_AKTIVASI_FROM_CORE) — **Kode Lama** | 80 (TRX_MB_AKTIVASI_FROM_CORE_V2) — **Aktif** |
+| Output kode | PIN 6 digit plaintext di response | Kode Fasilitas 6 digit (terenkripsi, disimpan ke DB) |
+| Kanal kirim | SMS / Email | Email (#E) / SMS Masking (#S) / SMS GW (#SL) / WA Blast (#W) |
+| Field tambahan | `EMAIL` opsional | `EMAIL`, `EMAILCBS`, `CIF`, `WABLAST`, `OTP` |
+| Cek duplikasi | HP + Agen | (HP **atau** CIF) + Agen |
+| Warna UI | Green (`#16a34a`) | Blue (`#2563eb`) |
+| Cache token | `aktivasi_mbanking_token.cache` | `aktivasi_mbanking2_token.cache` |
+
+### Flow Teknis — aktivasimbanking.php (KT=50)
+
+```
+aktivasimbanking.php
+  Step 1 → GET OAuth token (http://myassist.sis1.net/assist-auth_api/...)
+            Cache ke storage/cds/cache/aktivasi_mbanking_token.cache
+  Step 2 → Bangun ISO 8583 request:
+            MTI  = 009           (DIGITAL_BANK_REGISTER)
+            KT   = 50            (TRX_MB_AKTIVASI_FROM_CORE)
+            AGEN = A-000300
+            MSG  = CS#{faktur}#mBankingREG#{noHP}#{kodeAgen}
+            + EMAIL (opsional)
+  Step 3 → POST ke http://switching.mcoll.sis1.net/.../mobile-digital
+  Step 4 → Parse response CBS:
+            AR#{faktur}#SUKSES#Tunggu SMS pemberitahuan selanjutnya#{encPIN}#{pin}  ✅
+            AR#{faktur}#SUKSES#Tunggu Email pemberitahuan selanjutnya#{encPIN}#{pin} ✅
+            AR#{faktur}#GAGAL#Nomor sudah diaktivasi sebelumnya                     ❌
+
+CBS handler (mbanking.controller.php):
+  MTI=009 + KT=50 → RegisterDigital()
+    → Cek agen_aktifasi WHERE HP + Agen + mBankingToken != ''
+    → Jika belum ada → generate PIN rand(100000, 999999)
+    → Jika EMAIL diisi → INSERT notifemail_sent (kirim via Email)
+    → Jika tidak → INSERT sms_gateway_outbox (kirim PIN via SMS)
+    → UPDATE agen_aktifasi SET HP, Agen, DateTime, Email
+    → Response: AR#...#SUKSES#...#{encryptedPIN}#{pinPlaintext}
+```
+
+### Flow Teknis — aktivasimbanking2.php (KT=80)
+
+```
+aktivasimbanking2.php
+  Step 1 → GET OAuth token (cache ke aktivasi_mbanking2_token.cache)
+  Step 2 → Bangun ISO 8583 request:
+            MTI  = 009           (DIGITAL_BANK_REGISTER)
+            KT   = 80            (TRX_MB_AKTIVASI_FROM_CORE_V2)
+            AGEN = A-000300
+            MSG  = CS#{faktur}#mBankingREG#{noHP}#{kodeAgen}
+            + EMAIL, EMAILCBS, CIF, WABLAST=1, OTP (opsional)
+  Step 3 → POST ke http://switching.mcoll.sis1.net/.../mobile-digital
+  Step 4 → Parse response CBS:
+            AR#{faktur}#SUKSES#E   → Kode Fasilitas dikirim via Email   ✅
+            AR#{faktur}#SUKSES#S   → Kode Fasilitas dikirim via SMS Masking ✅
+            AR#{faktur}#SUKSES#SL  → Kode Fasilitas dikirim via SMS GW fallback ✅
+            AR#{faktur}#SUKSES#W   → Kode Fasilitas dikirim via WA Blast ✅
+            AR#{faktur}#GAGAL# Nomor atau CIF sudah diaktivasi sebelumnya ❌
+
+CBS handler (mbanking.controller.php):
+  MTI=009 + KT=80 → RegisterDigital_v2()
+    → Cek agen_aktifasi WHERE (HP OR KodeCIF) + Agen
+    → Jika belum ada → generate KodeFasilitas rand(100000,999999) → encryptIt()
+    → Kirim via Email / WA Blast / SMS Masking / SMS GW (fallback)
+    → UPDATE agen_aktifasi SET HP, Agen, DateTime, Email, mBankingKodeFasilitas, KodeCIF, DateTimeOTP
+```
+
+### Konfigurasi A-000300
+
+| Konstanta | Nilai | Sumber |
+|-----------|-------|--------|
+| `OAUTH_CLIENT_ID` | `000087` | `assist-bpr.net/env/` (auth_client_id) |
+| `OAUTH_CLIENT_SECRET` | `274FrdhikpazQXdLtv5kNoRucN7SlQPq` | `assist-bpr.net/env/` |
+| `OAUTH_CORPORATE_ID` | `553231` | `assist-bpr.net/env/` |
+| `OAUTH_SERTIFIKAT` | `d9ebe47971b415daadc3440ee4070aea` | config.sql (msAuth_SERTIFIKAT_API) |
+| `OAUTH_KODE_APLIKASI` | `BPRPAS` | config.sql |
+| `OAUTH_USERNAME` | `A-000300` | config.sql (msKodeH2H) |
+| `DE061_SIM_SERIAL` | `babba586c65c1a8119cfe6a6dae9972f` | config.sql (msCDSID) |
+| `KODE_AGEN` | `A-000300` | — |
+
+### Penggunaan
+
+**aktivasimbanking.php (KT=50):**
+1. Upload ke web server, buka `http://server/aktivasimbanking.php`
+2. Isi Nomor HP + Kode Agen + Email (opsional)
+3. Klik **Aktivasi mBanking** → konfirmasi JS
+4. Step 4: PIN awal user ditampilkan jika ada di response (bagian ke-6 dari AR#)
+
+**aktivasimbanking2.php (KT=80):**
+1. Upload ke web server, buka `http://server/aktivasimbanking2.php`
+2. Isi Nomor HP + Kode Agen
+3. Pilih kanal: Email / SMS (default) / WA Blast (centang + isi OTP)
+4. Isi CIF nasabah jika diperlukan cek duplikasi by CIF
+5. Klik **Aktivasi mBanking v2** → konfirmasi JS
+6. Step 4: kanal kirim ditampilkan (E/S/SL/W)
+7. User menyampaikan Kode Fasilitas ke CS untuk validasi KT=81
+
+### Struktur File
+
+```php
+aktivasimbanking.php
+  ├── KONFIGURASI (define A-000300)
+  ├── generateFaktur()         — faktur unik
+  ├── getAccessToken()         — OAuth + cache (identik mbanking_del.php v42d36d3)
+  ├── aktivasiMBanking()      — bangun ISO KT=50 + POST + parse AR#
+  ├── HANDLE POST REQUEST      — validasi + call aktivasiMBanking()
+  └── HTML OUTPUT              — form + 4-step + PIN display (Tailwind, Green)
+
+aktivasimbanking2.php
+  ├── KONFIGURASI (define A-000300) + KANAL_MAP
+  ├── generateFaktur()
+  ├── getAccessToken()         — identik
+  ├── aktivasiMBanking2()     — bangun ISO KT=80 + field tambahan + POST + parse
+  ├── HANDLE POST REQUEST      — validasi + call aktivasiMBanking2()
+  └── HTML OUTPUT              — form (dengan WA toggle) + 4-step + kanal display (Tailwind, Blue)
+```
 
 ---
 
