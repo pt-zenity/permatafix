@@ -520,14 +520,15 @@ if (empty($_de061)             && !empty($_BPR_ENV['DE061_SIM_SERIAL']))     $_d
 // msAuth_SERTIFIKAT_API     = d9ebe47971b415daadc3440ee4070aea  → OAUTH_SERTIFIKAT
 // msAuth_VERSI_SERTIFIKAT_API = 1.2.6                           → versi aplikasi
 // msCDSID                   = babba586c65c1a8119cfe6a6dae9972f  → DE061_SIM_SERIAL / DEVICEID
-// KodeAgentCBS              = bpr_pas                           → OAUTH_USERNAME (UserH2H)
+// KodeAgentCBS              = bpr_pas                           → OAUTH_USERNAME lama
+// msKodeH2H                 = A-000300                          → OAUTH_USERNAME (UserH2H, benar)
 // Digunakan jika .assist.env tidak ada DAN assist-bpr.net/env tidak mengandung nilai ini
 if (empty($_oauthClientId))     $_oauthClientId     = '15c1e0a4ec4a4a96d29bcfc809d280a8'; // msAuth_ACCESSTOKEN_API
 if (empty($_oauthClientSecret)) $_oauthClientSecret = '7bd947a413e1312ed7231bd2d6421588'; // msAuth_REFRESHTOKEN_API
 if (empty($_oauthSertifikat))   $_oauthSertifikat   = 'd9ebe47971b415daadc3440ee4070aea'; // msAuth_SERTIFIKAT_API
 if (empty($_oauthKodeAplikasi)) $_oauthKodeAplikasi = 'BPRPAS';                            // KodeAplikasi A-000300
 if (empty($_de061))             $_de061             = 'babba586c65c1a8119cfe6a6dae9972f'; // msCDSID
-if (empty($_oauthUsername))     $_oauthUsername     = 'bpr_pas';                           // KodeAgentCBS A-000300
+if (empty($_oauthUsername))     $_oauthUsername     = 'A-000300';                          // msKodeH2H
 
 $_envFile = !empty($_oauthSource) && str_contains($_oauthSource, 'bpr')
     ? ($_BPR_ENV['_env_file'] ?? ($_ASSIST_ENV['_env_file'] ?? ''))
