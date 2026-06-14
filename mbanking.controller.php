@@ -1108,7 +1108,7 @@ class mbanking_Controller extends MVC_Controller {
     // insert request to log first
     insert2SMSInbox($cHP, $cAgen, $vaRequest['MSG'], "mBanking");
 
-    $dbData   = objData::Browse("agen_aktifasi", "HP", "HP='" . $mBanking->KodeNegara($cHP) . "' and Agen = '$cAgen' and mBankingToken <> ''");
+    $dbData   = objData::Browse("agen_aktifasi", "HP", "HP='" . MBankingFunc::KodeNegara($cHP) . "' and Agen = '$cAgen' and mBankingToken <> ''");  // fix: $mBanking->KodeNegara → MBankingFunc::KodeNegara (undefined var di scope function)
     if ($dbRow = objData::GetRow($dbData)) {
       $cResponse = "AR#$cFaktur#GAGAL#Nomor sudah diaktivasi sebelumnya";
     } else {
