@@ -35,7 +35,7 @@
  *      dengan header: Authorization: Bearer {accessToken}
  *   4. Response di-parse dari ISO 8583 array
  *
- * Referensi: assist-switching_v3_pro v1.6.40 "Assist Pro Net"
+ * Referensi: assist-switching_v3_pro v1.6.42 "Assist Pro Net"
  *   - config/local_config.php
  *   - mvc/mbanking/mbanking.controller.php → ProsesInquiryPayment()
  *   - storage/cds/cache/*snap_tf_bank_permata.cache → KODE_AGEN + MFTFI
@@ -885,6 +885,16 @@ function buildISO8583Request(array $params, string $accessToken): array {
         $kodeBankDE048 = strtoupper(trim(
             $params['kode_bank_bifast'] ?? $params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''
         ));
+        // Guard: jika nilai masih berupa kode numerik BI (mis. "014"), auto-map ke KodeBIFAST BIC
+        // Ini terjadi saat kode_bank_bifast tidak diisi / JS auto-fill tidak berjalan
+        if (preg_match('/^\d+$/', $kodeBankDE048)) {
+            global $mapKodeBankBIFAST;
+            $mapped = $mapKodeBankBIFAST[$kodeBankDE048] ?? '';
+            if ($mapped !== '') {
+                $kodeBankDE048 = $mapped;
+            }
+            // Jika tidak ada di map → biarkan apa adanya (switching akan kembalikan error)
+        }
     } else {
         $kodeBankDE048 = strtoupper(trim($params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''));
     }
@@ -1352,6 +1362,16 @@ function buildISO8583PaymentRequest(array $params, string $accessToken, int $bia
         $kodeBankDE048 = strtoupper(trim(
             $params['kode_bank_bifast'] ?? $params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''
         ));
+        // Guard: jika nilai masih berupa kode numerik BI (mis. "014"), auto-map ke KodeBIFAST BIC
+        // Ini mencegah DE048 berisi "014" (numerik) yang ditolak Permata SNAP API
+        if (preg_match('/^\d+$/', $kodeBankDE048)) {
+            global $mapKodeBankBIFAST;
+            $mapped = $mapKodeBankBIFAST[$kodeBankDE048] ?? '';
+            if ($mapped !== '') {
+                $kodeBankDE048 = $mapped;
+            }
+            // Jika tidak ada di map → biarkan apa adanya (switching akan kembalikan error deskriptif)
+        }
     } else {
         $kodeBankDE048 = strtoupper(trim($params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''));
     }
@@ -1597,6 +1617,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'payme
 
     // Validasi wajib
     $nominal = (int)preg_replace('/\D/', '', $paymentFormData['nominal']);
+    // BIFAST: pastikan kode_bank_bifast berisi KodeBIFAST BIC, bukan kode numerik
+    if ($paymentFormData['jenis_transfer'] === 'BIFAST') {
+        $bifastVal = $paymentFormData['kode_bank_bifast'];
+        // Kosong atau masih numerik → auto-map via $mapKodeBankBIFAST
+        if (empty($bifastVal) || preg_match('/^\d+$/', $bifastVal)) {
+            $numericKey = !empty($bifastVal) ? $bifastVal : $paymentFormData['kode_bank'];
+            $paymentFormData['kode_bank_bifast'] = $mapKodeBankBIFAST[$numericKey]
+                ?? $paymentFormData['kode_bank_de048']
+                ?? $bifastVal;
+        }
+    }
     if (empty($paymentFormData['nomor_rekening'])) {
         $paymentError = 'Nomor rekening tujuan tidak boleh kosong.';
     } elseif (empty($paymentFormData['kode_bank'])) {
@@ -2727,7 +2758,7 @@ DE061_SIM_SERIAL=</pre>
                         </div>
                         <div class="cs-row" style="font-size:.78rem;">
                             <span class="cs-label">DE048 (request)</span>
-                            <span class="cs-val" style="font-size:.78rem;"><?= htmlspecialchars(buildDE048Payment($_jenisTF, $formData['kode_bank_de048'] ?? $formData['kode_bank'] ?? '', $_nominal)) ?></span>
+                            <span class="cs-val" style="font-size:.78rem;"><?= htmlspecialchars(buildDE048Payment($_jenisTF, ($_jenisTF === 'BIFAST' ? ($formData['kode_bank_bifast'] ?? $formData['kode_bank_de048'] ?? $formData['kode_bank'] ?? '') : ($formData['kode_bank_de048'] ?? $formData['kode_bank'] ?? '')), $_nominal)) ?></span>
                         </div>
                     </div>
 
@@ -3089,7 +3120,7 @@ RAW Response:
     <?php endif; ?>
 
     <div class="footer">
-        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.40 &mdash;
+        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.42 &mdash;
         PHP <?= PHP_VERSION ?> &mdash; <?= SNow() ?> WIB
     </div>
 
@@ -3133,6 +3164,47 @@ function handleJenisTransferChange() {
     document.getElementById('fieldBIFASTWrap').style.display = isBIFAST ? '' : 'none';
     document.getElementById('fieldDE048Wrap').style.display  = isBIFAST ? 'none' : '';
 }
+
+// Validasi real-time KodeBIFAST — tampilkan warning jika isi masih berupa angka
+(function() {
+    const inp = document.getElementById('kodeBankBIFAST');
+    if (!inp) return;
+    const hint = inp.closest('.form-group')?.querySelector('.field-hint');
+    inp.addEventListener('input', function() {
+        const v = this.value.trim();
+        if (v && /^\d+$/.test(v)) {
+            this.style.borderColor = '#dc2626';
+            this.style.background  = '#fef2f2';
+            if (hint) {
+                hint.innerHTML = '<span style="color:#dc2626;font-weight:600;">⚠️ Nilai <code>' + v + '</code> adalah kode numerik BI, bukan KodeBIFAST BIC!</span> '
+                    + 'Jalankan: <code>SELECT KodeBIFAST FROM bank_code WHERE Kode=\'' + v + '\'</code> '
+                    + 'untuk mendapat BIC yang benar (mis. <code>CENAIDJAXXX</code>). '
+                    + 'PHP akan auto-map dari <code>$mapKodeBankBIFAST</code> sebagai fallback.';
+            }
+            // Coba auto-map dari mapBIFAST
+            const mapped = mapBIFAST[v];
+            if (mapped) {
+                this.value = mapped;
+                this.style.borderColor = '#16a34a';
+                this.style.background  = '#f0fdf4';
+                if (hint) {
+                    hint.innerHTML = '<span style="color:#16a34a;font-weight:600;">✅ Auto-mapped: <code>' + v + '</code> → <code>' + mapped + '</code></span> '
+                        + 'Pastikan nilai ini sesuai kolom <code>KodeBIFAST</code> di tabel <code>bank_code</code> production.';
+                }
+            }
+        } else if (v) {
+            this.style.borderColor = '#2563eb';
+            this.style.background  = '';
+            if (hint) {
+                hint.innerHTML = 'Kolom <code>KodeBIFAST</code> tabel <code>bank_code</code> — BIC 8 atau 11-digit. '
+                    + 'Cek: <code>SELECT KodeBIFAST FROM bank_code WHERE Kode=\'...\'</code>';
+            }
+        } else {
+            this.style.borderColor = '';
+            this.style.background  = '';
+        }
+    });
+})();
 
 function handleSubmit(e) {
     const manual = document.getElementById('kodeBankManual').value.trim();

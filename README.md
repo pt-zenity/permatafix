@@ -10,6 +10,53 @@ Perbaikan file `tf.php` — Inquiry Transfer Bank via Permata SNAP (SIS/Assist S
 
 ---
 
+## Perubahan tf.php — v1.6.42 (sesi ini)
+
+**Root cause**: PAYBIFAST mengirim DE048=`"0602*1001*PAYBIFAST~~014*0"` — `"014"` adalah kode numerik BI (BCA), bukan KodeBIFAST BIC yang dibutuhkan Permata SNAP API. Server `PermataSNAP.mod.php` baris 264: `$cBeneficiaryBankCode = $vaDE48Tilde[1]` — menggunakan nilai apa adanya → Permata SNAP reject (DE039=03).
+
+| # | Bug | Root Cause | Fix |
+|---|-----|------------|-----|
+| 1 | **DE048 PAYBIFAST berisi `"014"` (numerik) bukan BIC** | `buildISO8583PaymentRequest()` fallback chain: `kode_bank_bifast ?? kode_bank_de048 ?? kode_bank` — jika `kode_bank_bifast` kosong, jatuh ke `kode_bank` = `"014"` | Tambah guard: `if (preg_match('/^\d+$/', $kodeBankDE048))` → auto-map via `$mapKodeBankBIFAST` |
+| 2 | **Bug yang sama di `buildISO8583Request()` (INQ)** | Fallback chain sama, bisa kirim numerik ke DE048 | Tambah guard numerik yang sama di INQ |
+| 3 | **Payment handler tidak sanitasi `kode_bank_bifast`** | Hidden field `kode_bank_bifast` di confirm form bisa kosong/numerik | Tambah blok auto-map di payment handler sebelum validasi |
+| 4 | **Preview DE048 di confirm box salah** | `buildDE048Payment()` pakai `kode_bank_de048` bahkan saat jenis=BIFAST | Ganti ke ternary: BIFAST→`kode_bank_bifast`, lainnya→`kode_bank_de048` |
+| 5 | **Tidak ada UX warning saat user input numerik di KodeBIFAST field** | Field menerima angka tanpa feedback | Tambah event listener `input` → warning merah + auto-map JS dari `mapBIFAST` |
+
+**`$mapKodeBankBIFAST` BCA entry** (konfirmasi default):
+```
+'014' => 'CENAIDJAXXX'   // BCA — nilai aktual dari kolom KodeBIFAST tabel bank_code
+```
+Jika production DB memiliki nilai berbeda, jalankan: `SELECT KodeBIFAST FROM bank_code WHERE Kode='014'` dan update map.
+
+---
+
+## Perubahan tf.php — v1.6.41 (sesi sebelumnya)
+
+**Fitur BIFAST lengkap (INQBIFAST + PAYBIFAST):**
+
+| # | Perubahan |
+|---|-----------|
+| 1 | `buildDE048()` — BIFAST prefix `0602`, format `INQBIFAST~~{KodeBIFAST}~~{nominal}` |
+| 2 | `buildDE048Payment()` — BIFAST prefix `0602`, format `PAYBIFAST~~{KodeBIFAST}*0` |
+| 3 | `buildISO8583Request()` + `buildISO8583PaymentRequest()` — routing ke `kode_bank_bifast` untuk BIFAST |
+| 4 | `$mapKodeBankBIFAST` — 20+ bank mapping kode numerik BI → KodeBIFAST BIC |
+| 5 | UI tab ke-4 "⚡ BI-FAST" (biru), field KodeBIFAST toggle, JS auto-fill |
+| 6 | Payment confirm form: hidden field `kode_bank_bifast` |
+
+---
+
+## Perubahan tf.php — v1.6.40 (sesi sebelumnya)
+
+**Production-ready cleanup + rcDescription():**
+
+| # | Perubahan |
+|---|-----------|
+| 1 | Tambah `rcDescription()` — 60+ RC codes + 15 BI-FAST U-codes |
+| 2 | UI error display inquiry+payment fail: RC badge, deskripsi, tip |
+| 3 | Bersihkan semua label "MTI=200" → "MTI=002" (8 lokasi) |
+
+---
+
 ## Perubahan tf.php — Commit 2 (sesi ini, setelah uji coba live)
 
 Ditemukan dari debug log transaksi BCA rekening 5465389271 (RC=00 sukses, tapi STEP 4=`[]`):
@@ -59,5 +106,7 @@ Biaya admin dari DE004: `"000000750000"` → Rp 7.500
 ## Referensi
 
 - `mbanking.controller.php` → `ProsesInquiryPayment()`, `GetInquiryHistoryCBS()`
-- `PermataSNAP.mod.php` → `GetTFINQ()`, `SetResponseISO()`
-- Format ISO 8583: MTI=010 (inquiry), DE039 (RC), DE048 (tagihan/pesan), DE103 (kode bank numerik BI)
+- `PermataSNAP.mod.php` → `GetTFINQ()`, baris 264: `$cBeneficiaryBankCode = $vaDE48Tilde[1]` — nilai DE048 pos[1] langsung ke Permata SNAP
+- `prosespermata.mod.php` → baris 70 comment: `INQBIFAST~~BMRIIDJA` — konfirmasi format BIC diperlukan
+- Format ISO 8583: MTI=010 (inquiry), MTI=002 (payment), DE039 (RC), DE048 (tagihan/pesan), DE103 (kode bank numerik BI)
+
