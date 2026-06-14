@@ -7,6 +7,7 @@
  *       → polling status vpn_verify_list → tampilkan hasil connect
  *
  * Endpoint assist-pro.net:
+ *   Base URL : http://aa.pro.sis1.net/assist-pro.net
  *   POST index_mobile.php   body JSON (cCode=...)
  *   MTI=02, KT=02104  → QRSCAN    (mobile scan → set Status=3)
  *   MTI=04, KT=04001  → CEKVPN    (PC polling → can connect)
@@ -18,7 +19,7 @@
 // ─────────────────────────────────────────────
 //  KONFIGURASI — sesuaikan dengan lingkungan
 // ─────────────────────────────────────────────
-define('API_BASE_URL',    '');          // URL assist-pro.net, contoh: 'https://app.assist-pro.net'
+define('API_BASE_URL',    'http://aa.pro.sis1.net/assist-pro.net');  // URL assist-pro.net
 define('API_ENDPOINT',    'index_mobile.php');  // relatif dari API_BASE_URL
 define('APP_TITLE',       'QR VPN Login');
 define('APP_VERSION',     '1.0.0');
