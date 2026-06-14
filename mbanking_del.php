@@ -416,6 +416,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_del'])) {
                     <span class="font-mono"><?= htmlspecialchars(URL_GET_TOKEN) ?></span>
                     <span class="text-gray-500">Kode Agen</span>
                     <span class="font-mono"><?= htmlspecialchars(KODE_AGEN) ?></span>
+                    <span class="text-gray-500">USERNAME</span>
+                    <span class="font-mono"><?= htmlspecialchars(OAUTH_USERNAME) ?></span>
+                    <span class="text-gray-500">KODEAPLIKASI</span>
+                    <span class="font-mono"><?= htmlspecialchars(OAUTH_KODE_APLIKASI) ?></span>
+                    <span class="text-gray-500">SERTIFIKAT (Bearer)</span>
+                    <span class="font-mono"><?= htmlspecialchars(substr(OAUTH_SERTIFIKAT ?: OAUTH_CLIENT_ID, 0, 8)) ?>...</span>
                     <span class="text-gray-500">Dari Cache</span>
                     <span class="font-mono <?= $result['token_result']['from_cache'] ? 'ok' : 'warn' ?>">
                         <?= $result['token_result']['from_cache'] ? 'YA' : 'TIDAK (baru)' ?>
@@ -426,7 +432,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_del'])) {
                     </span>
                     <span class="text-gray-500">HTTP Code</span>
                     <span class="font-mono"><?= htmlspecialchars((string)($result['token_result']['http_code'] ?? '-')) ?></span>
+                    <?php if (!$result['token_result']['success']): ?>
+                    <span class="text-gray-500">Error</span>
+                    <span class="font-mono err"><?= htmlspecialchars($result['token_result']['error'] ?? '-') ?></span>
+                    <?php endif; ?>
                 </div>
+                <?php if (!empty($result['token_result']['raw'])): ?>
+                <details class="mt-2">
+                    <summary class="text-xs text-indigo-500 cursor-pointer hover:underline">OAuth Raw Response</summary>
+                    <pre class="text-xs bg-gray-50 rounded p-2 mt-1"><?= htmlspecialchars($result['token_result']['raw']) ?></pre>
+                </details>
+                <?php endif; ?>
             </div>
 
             <!-- Step 2: ISO Request -->
@@ -441,19 +457,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_del'])) {
             <!-- Step 3: HTTP POST -->
             <div class="step-box rounded-r-lg p-3">
                 <div class="text-xs font-bold text-indigo-600 mb-1">━━ STEP 3: HTTP POST ke CBS ━━</div>
+                <?php if (($result['step'] ?? '') === 'token'): ?>
+                <div class="text-xs text-amber-600 font-semibold">⚠️ Tidak dieksekusi — gagal di Step 1 (token)</div>
+                <?php else: ?>
                 <div class="text-xs text-gray-600 grid grid-cols-2 gap-1">
                     <span class="text-gray-500">URL</span>
                     <span class="font-mono text-xs break-all"><?= htmlspecialchars(URL_DIGITAL) ?></span>
                     <span class="text-gray-500">HTTP Code</span>
-                    <span class="font-mono <?= $result['http_code'] == 200 ? 'ok' : 'err' ?>">
-                        <?= htmlspecialchars((string)$result['http_code']) ?> (<?= $result['elapsed_ms'] ?>ms)
+                    <span class="font-mono <?= ($result['http_code'] ?? 0) == 200 ? 'ok' : 'err' ?>">
+                        <?= htmlspecialchars((string)($result['http_code'] ?? '-')) ?> (<?= ($result['elapsed_ms'] ?? '-') ?>ms)
                     </span>
                 </div>
+                <?php endif; ?>
             </div>
 
             <!-- Step 4: Response -->
             <div class="step-box rounded-r-lg p-3">
                 <div class="text-xs font-bold text-indigo-600 mb-1">━━ STEP 4: RESPONSE CBS ━━</div>
+                <?php if (($result['step'] ?? '') === 'token'): ?>
+                <div class="text-xs text-amber-600 font-semibold">⚠️ Tidak dieksekusi — gagal di Step 1 (token)</div>
+                <?php else: ?>
                 <div class="text-xs text-gray-600 grid grid-cols-2 gap-1">
                     <span class="text-gray-500">Status</span>
                     <span class="font-mono font-bold <?= $result['success'] ? 'ok' : 'err' ?>">
@@ -468,6 +491,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_del'])) {
                     <summary class="text-xs text-indigo-500 cursor-pointer hover:underline">Raw Response</summary>
                     <pre class="text-xs bg-gray-50 rounded p-2 mt-1"><?= htmlspecialchars($result['raw_response'] ?? '') ?></pre>
                 </details>
+                <?php endif; ?>
             </div>
 
         </div><!-- /space-y-3 -->
