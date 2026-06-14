@@ -6,7 +6,7 @@ Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Tran
 
 | File | Keterangan |
 |------|------------|
-| `tf.php` | Script PHP single-file untuk testing inquiry & payment transfer bank — **v1.6.44** (dual-provider: Permata SNAP + Danamon SNAP fallback) |
+| `tf.php` | Script PHP single-file untuk testing inquiry & payment transfer bank — **v1.6.45** (zero-pad kode bank numerik fix) |
 | `mbanking.controller.php` | Controller mBanking — fix PHP Notice "Undefined index: KT" (line 111) |
 | `mbanking_del.php` | Script PHP single-file deaktivasi user mBanking — MTI=009/KT=51, A-000300 |
 
@@ -98,6 +98,37 @@ $cKT = isset($vaRequest['KT']) ? $vaRequest['KT'] : '';  // fix: isset() guard, 
 ```
 
 > **Catatan**: Fix ini hanya menghilangkan PHP Notice dari log. Tidak mempengaruhi alur transaksi karena `$lWeird` di-force `false` di line 121.
+
+---
+
+## Perubahan tf.php — v1.6.45 (sesi 5B — kode bank numerik zero-pad fix)
+
+**Root cause dari debug live test**: DE103=`"01"` dan DE048=`"0602*1001*INQBIFAST~~01~~500329"` — kode numerik BI 2-digit tidak ditemukan di `$mapKodeBankBIFAST` (map hanya berisi key 3-digit: `"011"`, `"014"`, dll.).
+
+| # | Bug | Root Cause | Fix |
+|---|-----|------------|-----|
+| 1 | **DE048 BIFAST berisi `"~~01~~"`** — kode tidak ter-map ke BIC | `"01"` (2 digit) tidak ada di `$mapKodeBankBIFAST`; map hanya punya `"011"` (Danamon), `"014"` (BCA) | Tambah **zero-pad** sebelum lookup: `str_pad(kode, 3, '0', STR_PAD_LEFT)` di 4 titik |
+| 2 | **DE103 = `"01"`** dikirim ke CBS | `kode_bank` dari POST tidak di-normalize sebelum diteruskan ke ISO | Normalize `kode_bank` ke 3 digit di handler inquiry + payment |
+
+**Zero-pad diterapkan di 4 titik:**
+```
+1. Handler POST inquiry   — kode_bank normalize sebelum validasi
+2. Handler POST payment   — kode_bank normalize sebelum validasi  
+3. buildISO8583Request()  — guard numerik auto-map BIFAST
+4. buildISO8583PaymentRequest() — guard numerik auto-map BIFAST
+```
+
+**Contoh efek fix:**
+```
+User input kode bank: "01"  → normalize → "011" (Danamon) → map → "BDINIDJA"
+User input kode bank: "14"  → normalize → "014" (BCA)     → map → "CENAIDJA"
+User input kode bank: "8"   → normalize → "008" (Mandiri)  → map → "BMRIIDJA"
+User input kode bank: "014" → sudah 3 digit, map langsung  → "CENAIDJA"
+```
+
+**Temuan lain dari debug yang TIDAK difix di tf.php (masalah di server):**
+- `Notice: Undefined index: KT` di `mbanking.controller.php` line 108 — fix sudah ada di repo (`092c278`) tapi **belum di-deploy ke production**
+- `Notice: Undefined index: URL` di `mbanking.controller.php` line 782 — bug tambahan di server, belum dianalisis
 
 ---
 

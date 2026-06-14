@@ -41,7 +41,7 @@
  *      dengan header: Authorization: Bearer {accessToken}
  *   4. Response di-parse dari ISO 8583 array
  *
- * Referensi: assist-switching_v3_pro v1.6.44 "Assist Pro Net"
+ * Referensi: assist-switching_v3_pro v1.6.45 "Assist Pro Net"
  *   - config/local_config.php
  *   - mvc/mbanking/mbanking.controller.php → ProsesInquiryPayment()
  *   - storage/cds/cache/*snap_tf_bank_permata.cache → KODE_AGEN + MFTFI
@@ -912,7 +912,9 @@ function buildISO8583Request(array $params, string $accessToken): array {
         // Ini terjadi saat kode_bank_bifast tidak diisi / JS auto-fill tidak berjalan
         if (preg_match('/^\d+$/', $kodeBankDE048)) {
             global $mapKodeBankBIFAST;
-            $mapped = $mapKodeBankBIFAST[$kodeBankDE048] ?? '';
+            // Normalize ke 3 digit: "01" → "011", "14" → "014", "8" → "008"
+            $kodePad = str_pad($kodeBankDE048, 3, '0', STR_PAD_LEFT);
+            $mapped = $mapKodeBankBIFAST[$kodePad] ?? $mapKodeBankBIFAST[$kodeBankDE048] ?? '';
             if ($mapped !== '') {
                 $kodeBankDE048 = $mapped;
             }
@@ -1389,7 +1391,9 @@ function buildISO8583PaymentRequest(array $params, string $accessToken, int $bia
         // Ini mencegah DE048 berisi "014" (numerik) yang ditolak Permata SNAP API
         if (preg_match('/^\d+$/', $kodeBankDE048)) {
             global $mapKodeBankBIFAST;
-            $mapped = $mapKodeBankBIFAST[$kodeBankDE048] ?? '';
+            // Normalize ke 3 digit: "01" → "011", "14" → "014", "8" → "008"
+            $kodePad = str_pad($kodeBankDE048, 3, '0', STR_PAD_LEFT);
+            $mapped = $mapKodeBankBIFAST[$kodePad] ?? $mapKodeBankBIFAST[$kodeBankDE048] ?? '';
             if ($mapped !== '') {
                 $kodeBankDE048 = $mapped;
             }
@@ -1637,6 +1641,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'inqui
     if (!empty($formData['kode_bank_manual'])) {
         $formData['kode_bank'] = $formData['kode_bank_manual'];
     }
+    // Normalize kode_bank numerik ke 3 digit: "01" → "011", "14" → "014", "8" → "008"
+    if (!empty($formData['kode_bank']) && preg_match('/^\d+$/', $formData['kode_bank']) && strlen($formData['kode_bank']) < 3) {
+        $formData['kode_bank'] = str_pad($formData['kode_bank'], 3, '0', STR_PAD_LEFT);
+    }
     // Jika kode_bank_de048 kosong, gunakan kode_bank sebagai fallback
     if (empty($formData['kode_bank_de048'])) {
         $formData['kode_bank_de048'] = $formData['kode_bank'];
@@ -1644,7 +1652,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'inqui
     // Jika kode_bank_bifast kosong, coba auto-map dari kode numerik BI
     if (empty($formData['kode_bank_bifast']) && $formData['jenis_transfer'] === 'BIFAST') {
         global $mapKodeBankBIFAST;
-        $formData['kode_bank_bifast'] = $mapKodeBankBIFAST[$formData['kode_bank']] ?? $formData['kode_bank_de048'];
+        // Normalize ke 3 digit sebelum lookup: "01" → "011", "14" → "014"
+        $kbPad = str_pad($formData['kode_bank'], 3, '0', STR_PAD_LEFT);
+        $formData['kode_bank_bifast'] = $mapKodeBankBIFAST[$kbPad]
+            ?? $mapKodeBankBIFAST[$formData['kode_bank']]
+            ?? $formData['kode_bank_de048'];
     }
 
     // Validasi input
@@ -1685,6 +1697,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'payme
         'snap_provider'       => strtolower(trim($_POST['snap_provider'] ?? 'permata')), // 'permata' | 'danamon'
     ];
 
+    // Normalize kode_bank numerik ke 3 digit: "01" → "011", "14" → "014", "8" → "008"
+    if (!empty($paymentFormData['kode_bank']) && preg_match('/^\d+$/', $paymentFormData['kode_bank']) && strlen($paymentFormData['kode_bank']) < 3) {
+        $paymentFormData['kode_bank'] = str_pad($paymentFormData['kode_bank'], 3, '0', STR_PAD_LEFT);
+    }
+
     // Validasi wajib
     $nominal = (int)preg_replace('/\D/', '', $paymentFormData['nominal']);
     // BIFAST: pastikan kode_bank_bifast berisi KodeBIFAST BIC, bukan kode numerik
@@ -1693,7 +1710,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'payme
         // Kosong atau masih numerik → auto-map via $mapKodeBankBIFAST
         if (empty($bifastVal) || preg_match('/^\d+$/', $bifastVal)) {
             $numericKey = !empty($bifastVal) ? $bifastVal : $paymentFormData['kode_bank'];
-            $paymentFormData['kode_bank_bifast'] = $mapKodeBankBIFAST[$numericKey]
+            // Normalize ke 3 digit sebelum lookup: "01" → "011", "14" → "014"
+            $numericKeyPad = str_pad($numericKey, 3, '0', STR_PAD_LEFT);
+            $paymentFormData['kode_bank_bifast'] = $mapKodeBankBIFAST[$numericKeyPad]
+                ?? $mapKodeBankBIFAST[$numericKey]
                 ?? $paymentFormData['kode_bank_de048']
                 ?? $bifastVal;
         }
@@ -3241,7 +3261,7 @@ RAW Response:
     <?php endif; ?>
 
     <div class="footer">
-        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.44 &mdash;
+        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.45 &mdash;
         PHP <?= PHP_VERSION ?> &mdash; <?= SNow() ?> WIB
     </div>
 
