@@ -137,8 +137,22 @@ function getAccessToken(): array {
     }
 
     $resp = json_decode($raw, true);
-    $token = $resp['data']['access_token'] ?? $resp['access_token'] ?? '';
-    $expiresIn = (int)($resp['data']['expires_in'] ?? $resp['expires_in'] ?? 3600);
+    // Support dua format response:
+    //   Format A (lowercase) : $resp['data']['access_token'], $resp['access_token']
+    //   Format B (PascalCase): $resp['Data']['AccessToken']  ← myassist.sis1.net
+    $token = $resp['data']['access_token']
+          ?? $resp['access_token']
+          ?? $resp['Data']['AccessToken']
+          ?? '';
+    // LifeTime dari server dalam menit (mis. "15") — konversi ke detik
+    $expiresRaw = $resp['data']['expires_in']
+               ?? $resp['expires_in']
+               ?? $resp['Data']['LifeTime']
+               ?? null;
+    // Deteksi satuan: jika <= 1440 (maks 24 jam dalam menit), anggap menit
+    $expiresIn = ($expiresRaw !== null)
+        ? ((int)$expiresRaw <= 1440 ? (int)$expiresRaw * 60 : (int)$expiresRaw)
+        : 3600;
 
     if (!empty($token)) {
         // Simpan ke cache
@@ -163,7 +177,7 @@ function getAccessToken(): array {
         'from_cache' => false,
         'http_code'  => $httpCode,
         'raw'        => $raw,
-        'error'      => $resp['message'] ?? $resp['error'] ?? 'Token kosong',
+        'error'      => $resp['message'] ?? $resp['error'] ?? $resp['MSG'] ?? 'Token kosong',
     ];
 }
 
