@@ -1,12 +1,74 @@
 # permatafix
 
-Perbaikan file `tf.php` — Inquiry Transfer Bank via Permata SNAP (SIS/Assist Switching Middleware).
+Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Transfer Bank via Permata SNAP (SIS/Assist Switching Middleware).
 
 ## File
 
 | File | Keterangan |
 |------|------------|
-| `tf.php` | Script PHP single-file untuk testing inquiry transfer bank melalui jalur Permata SNAP |
+| `tf.php` | Script PHP single-file untuk testing inquiry & payment transfer bank melalui jalur Permata SNAP — **v1.6.43** |
+| `mbanking.controller.php` | Controller mBanking — fix PHP Notice "Undefined index: KT" (line 111) |
+
+---
+
+## Perubahan mbanking.controller.php (sesi 5B)
+
+**Bug**: PHP Notice `Undefined index: KT` di line 108 — terjadi pada setiap request ISO 8583 yang tidak menyertakan key `KT` di root level request.
+
+| # | Bug | Root Cause | Fix |
+|---|-----|------------|-----|
+| 1 | **PHP Notice "Undefined index: KT"** di line 108 | `$cKT = $vaRequest['KT']` tanpa `isset()` guard — jika key `KT` tidak ada di array, PHP throw Notice | Ganti ke: `$cKT = isset($vaRequest['KT']) ? $vaRequest['KT'] : '';` |
+
+```php
+// Sebelum (production — menyebabkan Notice di log):
+$cKT = $vaRequest['KT'] ;
+
+// Sesudah (fix — line 111):
+$cKT = isset($vaRequest['KT']) ? $vaRequest['KT'] : '';  // fix: isset() guard, cegah PHP Notice Undefined index
+```
+
+> **Catatan**: Fix ini hanya menghilangkan PHP Notice dari log. Tidak mempengaruhi alur transaksi karena `$lWeird` di-force `false` di line 121.
+
+---
+
+## Perubahan tf.php — v1.6.43 (sesi 5B — PHP execution order fix)
+
+**Root cause**: `$mapKodeBankBIFAST` dideklarasikan di line ~1739 (seksi DATA REFERENSI), sedangkan payment handler di line ~1620 sudah menggunakannya. PHP procedural: variabel belum ada saat auto-map dijalankan → auto-map gagal diam-diam → `"014"` tetap lolos ke DE048.
+
+| # | Bug | Root Cause | Fix |
+|---|-----|------------|-----|
+| 1 | **Auto-map kode bank tetap gagal** meski guard numerik sudah ada | `$mapKodeBankBIFAST` dideklarasikan setelah handler POST yang menggunakannya (PHP execution order) | Pindah deklarasi `$mapKodeBankBIFAST` ke line ~1547, **sebelum** blok `// HANDLE POST REQUEST` |
+
+**Urutan eksekusi sebelum fix (salah):**
+```
+line ~1546: // HANDLE POST REQUEST
+line ~1620: payment handler → if (empty($bifastVal) || preg_match('/^\d+$/', $bifastVal))
+              → $paymentFormData['kode_bank_bifast'] = $mapKodeBankBIFAST[$numericKey]
+              → ❌ $mapKodeBankBIFAST belum ada → PHP undefined variable → auto-map gagal
+line ~1739: $mapKodeBankBIFAST = ['008' => 'BMRIIDJA', '014' => 'CENAIDJA', ...] ← terlambat!
+```
+
+**Urutan eksekusi sesudah fix (benar):**
+```
+line ~1547: $mapKodeBankBIFAST = ['008' => 'BMRIIDJA', '014' => 'CENAIDJA', ...] ← dipindah ke sini
+line ~1584: // HANDLE POST REQUEST
+line ~1620: payment handler → auto-map berhasil ✅
+```
+
+**Konfirmasi live test setelah v1.6.43 di-deploy:**
+```
+DE048: "0602*1001*PAYBIFAST~~CENAIDJA*0"  ✅ BENAR
+DE039: "03"  ← dari CBS/Permata SNAP (bukan tf.php)
+```
+
+---
+
+## Perubahan tf.php — v1.6.42 (commit 4c51f3c — BIC8 fix)
+
+**BCA KodeBIFAST dikonfirmasi dari production DB**: nilai di kolom `KodeBIFAST` adalah `CENAIDJA` (BIC8), **bukan** `CENAIDJAXXX` (BIC11).
+
+- Update `$mapKodeBankBIFAST['014']`: `'CENAIDJAXXX'` → `'CENAIDJA'`
+- Update 8 referensi di docblock, komentar, dan placeholder
 
 ---
 
@@ -103,10 +165,62 @@ Ditemukan dari debug log transaksi BCA rekening 5465389271 (RC=00 sukses, tapi S
 
 Biaya admin dari DE004: `"000000750000"` → Rp 7.500
 
+---
+
+## Diagnosis DE039=03 (sesi 5B — masih aktif)
+
+**Status**: DE048 tf.php sudah benar (`PAYBIFAST~~CENAIDJA*0` ✅). DE039=03 berasal dari CBS/Permata SNAP, bukan dari tf.php.
+
+**Trace flow MTI=002 DE003=211041 (PAYBIFAST):**
+```
+tf.php → ISO 8583 (MTI=002, DE048=PAYBIFAST~~CENAIDJA*0)
+  → mbanking.controller.php: ReadRequest() → mBanking()
+  → mBanking() appends margin: DE048 jadi PAYBIFAST~~CENAIDJA*0*0
+  → SendHTTPPost($cURL) → CBS agen URL
+  → CBS processes PAYBIFAST
+  → CBS → Permata SNAP API
+  → Permata SNAP returns DE039=03 (Invalid Merchant)
+```
+
+**3 Kemungkinan root cause:**
+
+| # | Penyebab | Probabilitas | Diagnosis SQL |
+|---|----------|-------------|---------------|
+| 1 | **A-000268 tidak ada di `agen_fitur` atau `PermataSNAPTF ≠ '1'`** | 90% | `SELECT KodeAgen, PermataSNAPTF FROM agen_fitur WHERE KodeAgen = 'A-000268'` |
+| 2 | `bank_code.KodeBIFAST` untuk Kode=014 kosong/salah | 7% | `SELECT Kode, KodeBIFAST FROM bank_code WHERE Kode = '014'` |
+| 3 | Rekening 5465389271 restricted untuk BI-FAST di BCA | 3% | Test dengan rekening BCA lain |
+
+**SQL diagnosis (jalankan di production DB):**
+```sql
+-- Query 1: Cek konfigurasi agen
+SELECT KodeAgen, PermataSNAPTF, DanamonSNAPTF, KodeBankTFOB
+FROM agen_fitur
+WHERE KodeAgen = 'A-000268';
+
+-- Query 2: Cek KodeBIFAST BCA
+SELECT Kode, Nama, KodeBIFAST, BankPermataID, TransferOnline
+FROM bank_code
+WHERE Kode = '014';
+```
+
+**Fix berdasarkan hasil Query 1:**
+```sql
+-- Jika row tidak ada:
+INSERT INTO agen_fitur (KodeAgen, PermataSNAPTF, DanamonSNAPTF, KodeBankTFOB)
+VALUES ('A-000268', '1', '0', '');
+
+-- Jika row ada tapi PermataSNAPTF ≠ '1':
+UPDATE agen_fitur SET PermataSNAPTF = '1' WHERE KodeAgen = 'A-000268';
+```
+
+---
+
 ## Referensi
 
-- `mbanking.controller.php` → `ProsesInquiryPayment()`, `GetInquiryHistoryCBS()`
+- `mbanking.controller.php` → `ProsesInquiryPayment()`, `GetInquiryHistoryCBS()`, `mBanking()`
 - `PermataSNAP.mod.php` → `GetTFINQ()`, baris 264: `$cBeneficiaryBankCode = $vaDE48Tilde[1]` — nilai DE048 pos[1] langsung ke Permata SNAP
 - `prosespermata.mod.php` → baris 70 comment: `INQBIFAST~~BMRIIDJA` — konfirmasi format BIC diperlukan
+- `MBankingFunc.mod.php` → `GetHargaPPOB()` baris 69: TRX_PASCA_2 tidak parse DE048 → `$cKodeProduk` = full string → margin=0
 - Format ISO 8583: MTI=010 (inquiry), MTI=002 (payment), DE039 (RC), DE048 (tagihan/pesan), DE103 (kode bank numerik BI)
+- `agen_fitur.PermataSNAPTF = "1"` → wajib ada agar routing BIFAST ke Permata SNAP aktif
 
