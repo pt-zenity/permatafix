@@ -13,6 +13,67 @@ Perbaikan file `tf.php` dan `mbanking.controller.php` — Inquiry & Payment Tran
 | `aktivasimbanking.php` | Script PHP single-file aktivasi user mBanking (v1 lama) — MTI=009/KT=50, kirim PIN via SMS/Email |
 | `aktivasimbanking2.php` | Script PHP single-file aktivasi user mBanking (v2 aktif) — MTI=009/KT=80, Kode Fasilitas + Email/SMS/WA |
 | `qrvpn.php` | QR Code Scanner + Generator + VPN Login — 3 tab, jsQR kamera, qrcode.js generate, cURL login portal |
+| `qrvpnlogin.php` | QR Scan VPN Login assist-pro.net — 4 tab: Scan QR (QRSCAN KT=02104), Generate QR Username VPN, VPN List (GETVPNLIST KT=02100), Polling Status (CEKVPN KT=04001) |
+
+---
+
+## qrvpnlogin.php — QR Scan VPN Login assist-pro.net (sesi 6)
+
+Script PHP **single-file** integrasi langsung dengan `index_mobile.php` assist-pro.net.
+Mengimplementasikan seluruh alur QR scan → VPN login sesuai source code `index_mobile.assistteam.php` dan `index_mobile.vpn.php`.
+
+### Konfigurasi
+
+```php
+define('API_BASE_URL',  'https://app.assist-pro.net');  // URL assist-pro.net
+define('API_ENDPOINT',  'index_mobile.php');             // relatif
+define('CURL_TIMEOUT',  15);
+```
+
+### 4 Tab Fungsional
+
+| Tab | Fungsi | Endpoint |
+|-----|--------|----------|
+| 📷 **Scan QR** | Kamera browser + upload gambar → decode QR → kirim QRSCAN | `MTI=02, KT=02104` |
+| ⚡ **Generate QR** | Build QR berisi Username VPN (plain/JSON/custom) → download PNG | client-side |
+| 🖥️ **VPN List** | Ambil daftar VPN by email | `MTI=02, KT=02100` |
+| 🔄 **Polling Status** | Polling CEKVPN, konfirmasi connect, disconnect | `MTI=04, KT=04001/04003` |
+
+### Alur QR VPN Login
+
+```
+1. Generate QR   → Tab Generate → isi Username VPN → QR tampil
+2. Scan QR       → Tab Scan → kamera/upload → QRSCAN (KT=02104) → Status=3
+3. Polling PC    → Tab Polling → Mulai Polling → CEKVPN (KT=04001)
+4. Can Connect   → dapat DataVPN + URLSertifikat + URLRasphone
+5. Konfirmasi    → EDITVPNSTATUS (KT=04003) → Status=1
+6. Disconnect    → DISCONECTVPN (KT=02105) → Status=0
+```
+
+### Field Request/Response Utama
+
+| KT | Nama | Request Fields | Response |
+|----|------|---------------|----------|
+| `02104` | QRSCAN | `Username, MacAddress, ClientID, APPVersion` | `Status:"1"/"0"`, `MSG:"ok"\|"Gagal,..."` |
+| `04001` | CEKVPN | `MacAddress, ClientID` | `Data.MSG:"can connect"\|"sudah connect"\|"not found"`, `Data.DataVPN.URLSertifikat` |
+| `02100` | GETVPNLIST | `EMAIL` | `Data:[{Username,Customer,Status,Block,...}]` |
+| `04003` | EDITVPNSTATUS | `Username, MacAddress, ClientID, VPNVersion` | `Status:"1"`, `MSG:"ok"` |
+| `02105` | DISCONECTVPN | `Username` | `Status:"1"`, `MSG:"ok"` |
+
+### vpn_verify_list Status Flow
+
+```
+0 = Idle (belum ada request connect)
+3 = Mobile sudah scan QR → menunggu PC
+4 = PC sedang connecting (setelah CEKVPN terima Status=3)
+1 = Fully connected (setelah EDITVPNSTATUS)
+```
+
+### CDN Libraries
+
+- `jsQR@1.4.0` — QR decode kamera/gambar (client-side)
+- `qrcode` — QR generate canvas (client-side)
+- Tailwind CSS + Font Awesome
 
 ---
 
