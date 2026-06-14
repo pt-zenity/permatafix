@@ -799,26 +799,36 @@ function getAccessToken(): array {
  *   Format: {part1}*{part2}*{TrxCode}~~{KodeBank}
  *
  * Contoh DE048 (KodeBank diambil dari input user, bukan hardcoded):
- *   INQTFDANA: "0601*1001*INQTFDANA~~{kodeBank}"
- *   INQLLG:    "0201*1001*INQLLG~~{kodeBank}"
- *   INQRTGS:   "0801*1001*INQRTGS~~{kodeBank}"
+ *   INQTFDANA : "0601*1001*INQTFDANA~~{kodeBank}"
+ *   INQLLG    : "0201*1001*INQLLG~~{kodeBank}"
+ *   INQRTGS   : "0801*1001*INQRTGS~~{kodeBank}"
+ *   INQBIFAST : "0602*1001*INQBIFAST~~{kodeBIFAST}~~{nominal}"
+ *               kodeBIFAST = kolom KodeBIFAST di bank_code (mis. "CENAIDJAXXX")
+ *               nominal    = nominal transfer (diperlukan saat inquiry BI-FAST)
  *
  * Part1 = kode kategori, Part2 = kode produk internal, TrxCode = kode transaksi Assist
- * KodeBank  = kode bank tujuan dari tabel bank_code (Kode), mis. "BLTRFAG", "BNINIDJA"
- *             → wajib diisi; default fallback BLTRFAG hanya untuk backward-compat
+ * KodeBank  = kode bank tujuan:
+ *   TFDANA/LLG/RTGS = kolom Kode di bank_code (SWIFT/alias Assist), mis. "CENAIDJA"
+ *   BIFAST          = kolom KodeBIFAST di bank_code, mis. "CENAIDJAXXX" (BIC 11-digit)
  *
- * CATATAN: kode bank di DE048 adalah kolom Kode di tabel bank_code (SWIFT/alias Assist),
- *          BUKAN kode numerik BI (DE103). Contoh: DE103="014" → DE048 kodeBank="CENAIDJA"
+ * CATATAN: kode bank di DE048 adalah BUKAN kode numerik BI (DE103).
+ *          Contoh TFDANA: DE103="014" → DE048 kodeBank="CENAIDJA"
+ *          Contoh BIFAST: DE103="014" → DE048 kodeBIFAST="CENAIDJAXXX"
  */
-function buildDE048(string $jenisTF, string $kodeBank = 'BLTRFAG'): string {
+function buildDE048(string $jenisTF, string $kodeBank = 'BLTRFAG', int $nominal = 0): string {
     $kodeBank = strtoupper(trim($kodeBank));
     if (empty($kodeBank)) $kodeBank = 'BLTRFAG';  // fallback
     $prefix = [
         'TFDANA' => '0601*1001*INQTFDANA~~',
         'LLG'    => '0201*1001*INQLLG~~',
         'RTGS'   => '0801*1001*INQRTGS~~',
+        'BIFAST' => '0602*1001*INQBIFAST~~',
     ];
     $p = $prefix[strtoupper($jenisTF)] ?? $prefix['TFDANA'];
+    // BIFAST: tambahkan ~~{nominal} di belakang kodeBank
+    if (strtoupper($jenisTF) === 'BIFAST') {
+        return $p . $kodeBank . '~~' . (string)$nominal;
+    }
     return $p . $kodeBank;
 }
 
@@ -867,9 +877,19 @@ function buildISO8583Request(array $params, string $accessToken): array {
 
     // DE048: kode transaksi sesuai jenis transfer + kode bank tujuan (Kode di tabel bank_code)
     // kode_bank_de048 = kolom Kode di bank_code (alias Assist/SWIFT), mis. "BLTRFAG", "CENAIDJA"
-    // kode_bank (DE103) = kode numerik BI, mis. "014" (BCA) — keduanya bisa berbeda
-    $kodeBankDE048 = strtoupper(trim($params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''));
-    $de048 = buildDE048($jenisTF, $kodeBankDE048);
+    //   untuk TFDANA/LLG/RTGS: gunakan kolom Kode (BankPermataID/alias Assist)
+    //   untuk BIFAST          : gunakan kolom KodeBIFAST (BIC 11-digit, mis. "CENAIDJAXXX")
+    // kode_bank (DE103) = kode numerik BI, mis. "014" (BCA) — bisa berbeda dari DE048
+    if ($jenisTF === 'BIFAST') {
+        // BIFAST pakai kode_bank_bifast (KodeBIFAST), fallback ke kode_bank_de048
+        $kodeBankDE048 = strtoupper(trim(
+            $params['kode_bank_bifast'] ?? $params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''
+        ));
+    } else {
+        $kodeBankDE048 = strtoupper(trim($params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''));
+    }
+    // BIFAST: nominal diteruskan ke buildDE048 karena diperlukan dalam format DE048
+    $de048 = buildDE048($jenisTF, $kodeBankDE048, $nominal);
 
     // DE052: PIN block (64 zero untuk inquiry)
     $de052 = str_repeat('0', 64);
@@ -1232,6 +1252,21 @@ function rcDescription(string $rc): string {
         'XT' => 'Token OAuth gagal didapat',
         'XP' => 'Gagal parsing response switching',
         'XH' => 'HTTP error saat koneksi ke switching',
+        // ── Kode BI-FAST (format Uxxx dari BIFast.mod.php) ─
+        'U000' => 'BI-FAST: Sukses / Transaction Accepted',
+        'U100' => 'BI-FAST: Product Not Found',
+        'U110' => 'BI-FAST: Payment Not Accepted',
+        'U111' => 'BI-FAST: Minimum Amount Check Failed',
+        'U112' => 'BI-FAST: Maximum Amount Check Failed — melebihi Rp 250 juta',
+        'U115' => 'BI-FAST: Date Sent Tolerance Check Failed',
+        'U121' => 'BI-FAST: Inbound Bank Not Found',
+        'U124' => 'BI-FAST: Bank Code Not Found',
+        'U129' => 'BI-FAST: Payee Bank Unavailable',
+        'U149' => 'BI-FAST: Duplicate Transaction',
+        'U155' => 'BI-FAST: Fraud Check Failed',
+        'U156' => 'BI-FAST: Sanction Check Failed',
+        'U181' => 'BI-FAST: Stand-In Limit Exceeded',
+        'U184' => 'BI-FAST: Stand-In Insufficient Funds',
     ];
     return $map[$rc] ?? "RC={$rc} (kode tidak dikenal)";
 }
@@ -1249,6 +1284,8 @@ function rcDescription(string $rc): string {
  *   TFDANA : "0601*1001*PAYTFDANA~~CENAIDJA*0"
  *   LLG    : "0201*1001*PAYLLG~~CENAIDJA*0"
  *   RTGS   : "0801*1001*PAYRTGS~~CENAIDJA*0"
+ *   BIFAST : "0602*1001*PAYBIFAST~~CENAIDJAXXX*0"
+ *            kodeBank = kolom KodeBIFAST di bank_code (BIC 11-digit, mis. "CENAIDJAXXX")
  *
  * Part1   = kode kategori (prefix nominal — tetap diisi nominal saat PAY)
  * Part2   = kode produk internal (1001)
@@ -1264,6 +1301,7 @@ function buildDE048Payment(string $jenisTF, string $kodeBank, int $nominal = 0):
         'TFDANA' => '0601',
         'LLG'    => '0201',
         'RTGS'   => '0801',
+        'BIFAST' => '0602',
     ];
     $pfx = $prefixMap[strtoupper($jenisTF)] ?? '0601';
 
@@ -1309,7 +1347,14 @@ function buildISO8583PaymentRequest(array $params, string $accessToken, int $bia
     $de039 = '00';
 
     // DE048: PAY (bukan INQ) + kode bank Assist/SWIFT
-    $kodeBankDE048 = strtoupper(trim($params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''));
+    // BIFAST pakai kolom KodeBIFAST (BIC 11-digit); TFDANA/LLG/RTGS pakai kolom Kode
+    if ($jenisTF === 'BIFAST') {
+        $kodeBankDE048 = strtoupper(trim(
+            $params['kode_bank_bifast'] ?? $params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''
+        ));
+    } else {
+        $kodeBankDE048 = strtoupper(trim($params['kode_bank_de048'] ?? $params['kode_bank'] ?? ''));
+    }
     $de048 = buildDE048Payment($jenisTF, $kodeBankDE048, $nominal);
 
     // DE052: PIN block (64 zero — untuk non-PIN transaction via middleware)
@@ -1492,7 +1537,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'inqui
         'nomor_rekening'   => trim($_POST['nomor_rekening']    ?? ''),
         'kode_bank'         => trim($_POST['kode_bank']         ?? ''),  // kode numerik BI → DE103
         'kode_bank_manual'  => trim($_POST['kode_bank_manual']  ?? ''),  // override kode numerik BI
-        'kode_bank_de048'   => strtoupper(trim($_POST['kode_bank_de048'] ?? '')),  // kode Assist/SWIFT → DE048
+        'kode_bank_de048'   => strtoupper(trim($_POST['kode_bank_de048'] ?? '')),  // kode Assist/SWIFT → DE048 (TFDANA/LLG/RTGS)
+        'kode_bank_bifast'  => strtoupper(trim($_POST['kode_bank_bifast'] ?? '')), // KodeBIFAST → DE048 BIFAST
         'nama_bank'         => trim($_POST['nama_bank']         ?? ''),
         'nominal'           => trim($_POST['nominal']           ?? '0'),
         'jenis_transfer'    => strtoupper(trim($_POST['jenis_transfer'] ?? 'TFDANA')),
@@ -1505,6 +1551,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'inqui
     // Jika kode_bank_de048 kosong, gunakan kode_bank sebagai fallback
     if (empty($formData['kode_bank_de048'])) {
         $formData['kode_bank_de048'] = $formData['kode_bank'];
+    }
+    // Jika kode_bank_bifast kosong, coba auto-map dari kode numerik BI
+    if (empty($formData['kode_bank_bifast']) && $formData['jenis_transfer'] === 'BIFAST') {
+        global $mapKodeBankBIFAST;
+        $formData['kode_bank_bifast'] = $mapKodeBankBIFAST[$formData['kode_bank']] ?? $formData['kode_bank_de048'];
     }
 
     // Validasi input
@@ -1533,6 +1584,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'payme
         'nomor_rekening'      => trim($_POST['nomor_rekening']      ?? ''),
         'kode_bank'           => trim($_POST['kode_bank']           ?? ''),
         'kode_bank_de048'     => strtoupper(trim($_POST['kode_bank_de048']  ?? '')),
+        'kode_bank_bifast'    => strtoupper(trim($_POST['kode_bank_bifast'] ?? '')), // KodeBIFAST
         'nama_bank'           => trim($_POST['nama_bank']           ?? ''),
         'nominal'             => trim($_POST['nominal']             ?? '0'),
         'jenis_transfer'      => strtoupper(trim($_POST['jenis_transfer']  ?? 'TFDANA')),
@@ -1622,7 +1674,7 @@ $daftarBank = [
     '490'    => 'BSB (Bank Syariah Bukopin)',
 ];
 
-// Mapping kode numerik BI → kode Assist/SWIFT (untuk DE048)
+// Mapping kode numerik BI → kode Assist/SWIFT (untuk DE048 TFDANA/LLG/RTGS)
 // Digunakan untuk auto-fill field kode_bank_de048 via JavaScript
 $mapKodeBankDE048 = [
     '008'    => 'BMRIIDJA',   // Bank Mandiri
@@ -1648,12 +1700,47 @@ $mapKodeBankDE048 = [
     '036'    => 'BJBKIDJA',   // BJB (kode lama/RTGS — SWIFT sama)
 ];
 
+// Mapping kode numerik BI → KodeBIFAST (BIC 11-digit) untuk DE048 BIFAST
+// Kolom KodeBIFAST di tabel bank_code — format BIC11: {BANK}{CC}{LOC}{BRANCH}
+// mis. CENAIDJAXXX = CEN(BCA) A(Asia) IDJ(Indonesia) A(primary) XXX(HO)
+$mapKodeBankBIFAST = [
+    '008'    => 'BMRIIDJA',    // Bank Mandiri (BIC11 = BMRIIDJA ← beberapa bank pakai BIC8 saja)
+    '009'    => 'BNINIDJA',    // BNI
+    '002'    => 'BRINIDJA',    // BRI
+    '014'    => 'CENAIDJAXXX', // BCA
+    '013'    => 'BBBAIDJA',    // Bank Permata
+    '022'    => 'BIARINDJA',   // CIMB Niaga
+    '016'    => 'MBBEIDJA',    // Maybank
+    '011'    => 'BDINIDJA',    // Danamon
+    '028'    => 'NISPIDJA',    // OCBC NISP
+    '200'    => 'BTANIDJA',    // BTN
+    '019'    => 'PINBIDJA',    // Panin Bank
+    '023'    => 'UOVBIDJA',    // UOB
+    '153'    => 'MUABIDJA',    // Muamalat
+    '147'    => 'BBUKIDJA',    // Bukopin
+    '422'    => 'BSYIIDJA',    // BSI
+    '503'    => 'ARTOIDJA',    // Bank Jago
+    '506'    => 'SEAMIDJA',    // SeaBank
+    '335'    => 'BNCOIDJA',    // BNC
+    '110'    => 'BJBKIDJA',    // BJB
+    '036'    => 'BJBKIDJA',    // BJB (kode lama)
+    '441'    => 'MEGAIDJA',    // Bank Mega
+    '111'    => 'BDKIIDJA',    // Bank DKI
+    '114'    => 'BJTMIDJA',    // BPD Jatim
+    '112'    => 'BCENIDJA',    // BPD Jateng
+];
+// CATATAN: KodeBIFAST di atas adalah nilai umum/default.
+// Nilai aktual yang dipakai harus dari kolom KodeBIFAST di tabel bank_code production.
+// Jika inquiry BI-FAST gagal, cek kolom KodeBIFAST via:
+//   SELECT Kode, Nama, KodeBIFAST FROM bank_code WHERE Kode='...'
+
 // Cek apakah konfigurasi lengkap
 $isConfigured = (KODE_AGEN !== '' && OAUTH_CLIENT_ID !== '' && OAUTH_USERNAME !== '');
 
 // Siapkan daftar bank untuk JavaScript (tanpa entry kosong)
-$daftarBankJs = array_filter($daftarBank,  fn($v) => $v !== '-- Pilih Bank --');
-$mapDE048Js   = $mapKodeBankDE048;
+$daftarBankJs  = array_filter($daftarBank,  fn($v) => $v !== '-- Pilih Bank --');
+$mapDE048Js    = $mapKodeBankDE048;
+$mapBIFASTJs   = $mapKodeBankBIFAST;
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -2386,7 +2473,7 @@ DE061_SIM_SERIAL=</pre>
                 <div>
                     Request dikirim ke <strong>proxy assist-switching_v3_pro</strong> (<code>/mobile-digital</code>) menggunakan format ISO 8583 (MTI=010).
                     Header: <code>Authorization: Bearer {token}</code> — proxy yang meneruskan ke digital.sis1.net.
-                    DE048 berisi kode transaksi Assist (<code>INQTFDANA</code> / <code>INQLLG</code> / <code>INQRTGS</code>).
+                    DE048 berisi kode transaksi Assist (<code>INQTFDANA</code> / <code>INQLLG</code> / <code>INQRTGS</code> / <code>INQBIFAST</code>).
                 </div>
             </div>
 
@@ -2421,6 +2508,15 @@ DE061_SIM_SERIAL=</pre>
                             <span class="td">Di atas Rp 100 juta</span>
                             <span class="tde048">DE048: INQRTGS</span>
                         </label>
+                        <label class="type-tab <?= ($formData['jenis_transfer'] ?? '') === 'BIFAST' ? 'active' : '' ?>" style="border-color:#2563eb;">
+                            <input type="radio" name="jenis_transfer" value="BIFAST"
+                                <?= ($formData['jenis_transfer'] ?? '') === 'BIFAST' ? 'checked' : '' ?>
+                                onchange="handleJenisTransferChange()">
+                            <span class="ti">⚡</span>
+                            <span class="tl" style="color:#1d4ed8;">BI-FAST</span>
+                            <span class="td">Real-time 24/7, maks. Rp 250 juta</span>
+                            <span class="tde048" style="background:#dbeafe;color:#1e40af;">DE048: INQBIFAST</span>
+                        </label>
                     </div>
                 </div>
 
@@ -2448,13 +2544,26 @@ DE061_SIM_SERIAL=</pre>
                         <div class="field-hint">Override pilihan dropdown di atas</div>
                     </div>
 
-                    <div class="form-group">
+                    <div class="form-group" id="fieldDE048Wrap">
                         <label>Kode Bank DE048 (Assist/SWIFT) <span class="req">*</span></label>
                         <input type="text" name="kode_bank_de048" id="kodeBankDE048"
                             placeholder="Mis. BLTRFAG, CENAIDJA, BNINIDJA"
                             value="<?= htmlspecialchars($formData['kode_bank_de048'] ?? '') ?>"
                             oninput="this.value=this.value.toUpperCase()">
-                        <div class="field-hint">Kode bank di DE048 (kolom <code>Kode</code> tabel <code>bank_code</code>) &mdash; auto-fill dari dropdown</div>
+                        <div class="field-hint">Kode bank di DE048 TFDANA/LLG/RTGS (kolom <code>Kode</code> tabel <code>bank_code</code>) &mdash; auto-fill dari dropdown</div>
+                    </div>
+
+                    <!-- Field KodeBIFAST — hanya muncul saat BIFAST dipilih -->
+                    <div class="form-group" id="fieldBIFASTWrap" style="<?= ($formData['jenis_transfer'] ?? '') !== 'BIFAST' ? 'display:none;' : '' ?>">
+                        <label style="color:#1d4ed8;">⚡ Kode Bank BI-FAST (KodeBIFAST) <span class="req">*</span></label>
+                        <input type="text" name="kode_bank_bifast" id="kodeBankBIFAST"
+                            placeholder="Mis. CENAIDJAXXX, BNINIDJA, BMRIIDJA"
+                            value="<?= htmlspecialchars($formData['kode_bank_bifast'] ?? '') ?>"
+                            oninput="this.value=this.value.toUpperCase()">
+                        <div class="field-hint" style="color:#1e40af;">
+                            Kolom <code>KodeBIFAST</code> tabel <code>bank_code</code> — BIC 11-digit.
+                            Cek: <code>SELECT KodeBIFAST FROM bank_code WHERE Kode='...'</code>
+                        </div>
                     </div>
 
                     <input type="hidden" name="nama_bank" id="namaBank"
@@ -2581,7 +2690,7 @@ DE061_SIM_SERIAL=</pre>
                         <span class="cw-ic">⚠️</span>
                         <div>
                             <strong>Peringatan:</strong> Tombol <em>Eksekusi Transfer</em> akan mengirimkan
-                            request <strong>MTI=002 (DIGITAL_BANK) / DE003=211041 (PAYTFDANA)</strong> ke switching.
+                            request <strong>MTI=002 (DIGITAL_BANK) / DE003=211041 (PAY<?= htmlspecialchars($_jenisTF) ?>)</strong> ke switching.
                             Transaksi ini bersifat <strong>irreversible</strong> — pastikan rekening tujuan,
                             nominal, dan bank sudah benar sebelum melanjutkan.
                         </div>
@@ -2627,6 +2736,7 @@ DE061_SIM_SERIAL=</pre>
                         <input type="hidden" name="nomor_rekening"       value="<?= htmlspecialchars($_beneNo) ?>">
                         <input type="hidden" name="kode_bank"            value="<?= htmlspecialchars($formData['kode_bank'] ?? '') ?>">
                         <input type="hidden" name="kode_bank_de048"      value="<?= htmlspecialchars($formData['kode_bank_de048'] ?? '') ?>">
+                        <input type="hidden" name="kode_bank_bifast"     value="<?= htmlspecialchars($formData['kode_bank_bifast'] ?? '') ?>">
                         <input type="hidden" name="nama_bank"            value="<?= htmlspecialchars($_beneBank) ?>">
                         <input type="hidden" name="nominal"              value="<?= htmlspecialchars((string)$_nominal) ?>">
                         <input type="hidden" name="jenis_transfer"       value="<?= htmlspecialchars($_jenisTF) ?>">
@@ -2667,6 +2777,7 @@ DE061_SIM_SERIAL=</pre>
                 elseif ($_iRC === '14') $_iTip = '💡 RC=14: Nomor rekening tidak terdaftar di bank tujuan.';
                 elseif ($_iRC === '91') $_iTip = '💡 RC=91: Bank tujuan tidak dapat dihubungi saat ini.';
                 elseif ($_iRC === '03') $_iTip = '💡 RC=03: Bank tujuan menolak inquiry — rekening mungkin diblokir atau tidak mengizinkan transfer masuk.';
+                elseif (substr($_iRC, 0, 1) === 'U') $_iTip = '💡 RC=U-xxx (BI-FAST): Kode error dari sistem BI-FAST. Cek detail di BIFast.mod.php fungsi RC(). Kemungkinan KodeBIFAST bank tidak sesuai kolom KodeBIFAST di tabel bank_code.';
             ?>
             <div class="alert alert-error" style="align-items:flex-start;">
                 <span class="al-ic" style="font-size:1.5rem;margin-top:2px;">🚫</span>
@@ -2919,6 +3030,7 @@ RAW Response:
                     elseif ($_fRC === '91') $tip = '💡 RC=91: Sistem bank tujuan sedang tidak dapat dihubungi. Coba beberapa menit lagi.';
                     elseif ($_fRC === '96') $tip = '💡 RC=96: System malfunction. Coba ulang transaksi.';
                     elseif ($_fRC === '11') $tip = '💡 RC=11: Inquiry tidak mengembalikan data. Pastikan InquiryCode bank di tabel bank_code sudah terisi dengan benar.';
+                    elseif (substr($_fRC, 0, 1) === 'U') $tip = '💡 RC=U-xxx (BI-FAST): Kode error dari sistem BI-FAST. Periksa KodeBIFAST bank di kolom KodeBIFAST tabel bank_code. RC U112 = melebihi Rp 250 juta, U129 = bank tujuan unavailable.';
                     if ($tip): ?>
                     <div style="margin-top:10px;padding:8px 10px;background:#fffbeb;border-left:3px solid #f59e0b;border-radius:4px;font-size:.82rem;color:#78350f;">
                         <?= htmlspecialchars($tip) ?>
@@ -2985,16 +3097,20 @@ RAW Response:
 
 <script>
 const bankNames = <?= json_encode($daftarBankJs) ?>;
-const mapDE048  = <?= json_encode($mapDE048Js) ?>;  // kode numerik BI → kode Assist/SWIFT (DE048)
+const mapDE048  = <?= json_encode($mapDE048Js) ?>;    // kode numerik BI → kode Assist/SWIFT (TFDANA/LLG/RTGS)
+const mapBIFAST = <?= json_encode($mapBIFASTJs) ?>;   // kode numerik BI → KodeBIFAST (BI-FAST BIC11)
 
 function setNamaBank(sel) {
     const kode = sel.value;
     document.getElementById('namaBank').value = bankNames[kode] || '';
     if (kode) {
         document.getElementById('kodeBankManual').value = '';
-        // Auto-fill kode DE048 jika ada mapping
+        // Auto-fill kode DE048 TFDANA/LLG/RTGS
         const de048 = mapDE048[kode] || '';
         document.getElementById('kodeBankDE048').value = de048;
+        // Auto-fill KodeBIFAST
+        const bifast = mapBIFAST[kode] || de048;
+        document.getElementById('kodeBankBIFAST').value = bifast;
     }
 }
 
@@ -3004,8 +3120,19 @@ document.getElementById('kodeBankManual').addEventListener('input', function() {
         document.getElementById('namaBank').value      = '';
         // Saat manual diisi, kosongkan auto-fill DE048
         document.getElementById('kodeBankDE048').value = '';
+        document.getElementById('kodeBankBIFAST').value = '';
     }
 });
+
+// Tampil/sembunyikan field KodeBIFAST sesuai jenis transfer
+function handleJenisTransferChange() {
+    const radios  = document.querySelectorAll('input[name="jenis_transfer"]');
+    let jenis = 'TFDANA';
+    radios.forEach(r => { if (r.checked) jenis = r.value; });
+    const isBIFAST = (jenis === 'BIFAST');
+    document.getElementById('fieldBIFASTWrap').style.display = isBIFAST ? '' : 'none';
+    document.getElementById('fieldDE048Wrap').style.display  = isBIFAST ? 'none' : '';
+}
 
 function handleSubmit(e) {
     const manual = document.getElementById('kodeBankManual').value.trim();
@@ -3036,8 +3163,12 @@ document.querySelectorAll('.type-tab input[type=radio]').forEach(function(r) {
     r.addEventListener('change', function() {
         document.querySelectorAll('.type-tab').forEach(t => t.classList.remove('active'));
         r.closest('.type-tab').classList.add('active');
+        handleJenisTransferChange();
     });
 });
+
+// Inisialisasi tampilan field saat halaman load
+handleJenisTransferChange();
 </script>
 </body>
 </html>
