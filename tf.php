@@ -514,17 +514,24 @@ if (empty($_oauthTokenPrivate) && !empty($_BPR_ENV['OAUTH_TOKEN_PRIVATE'])) $_oa
 if (empty($_oauthSertifikat)    && !empty($_BPR_ENV['OAUTH_SERTIFIKAT']))    $_oauthSertifikat   = $_BPR_ENV['OAUTH_SERTIFIKAT'];
 if (empty($_oauthKodeAplikasi) && !empty($_BPR_ENV['OAUTH_KODE_APLIKASI'])) $_oauthKodeAplikasi = $_BPR_ENV['OAUTH_KODE_APLIKASI'];
 if (empty($_de061)             && !empty($_BPR_ENV['DE061_SIM_SERIAL']))     $_de061             = $_BPR_ENV['DE061_SIM_SERIAL'];
-// Sumber 3: hardcoded defaults dari config.sql A-000300
-// msAuth_ACCESSTOKEN_API    = 15c1e0a4ec4a4a96d29bcfc809d280a8  → OAUTH_CLIENT_ID
-// msAuth_REFRESHTOKEN_API   = 7bd947a413e1312ed7231bd2d6421588  → OAUTH_CLIENT_SECRET
+// Sumber 3: hardcoded defaults dari config.sql + env BPR A-000300
+// ── assist-bpr.net/env/ (auth_*.env) ──────────────────────────────────────
+// auth_client_id            = 000087                            → OAUTH_CLIENT_ID
+// auth_client_secret        = 274FrdhikpazQXdLtv5kNoRucN7SlQPq → OAUTH_CLIENT_SECRET
+// auth_corporate_id         = 553231                            → OAUTH_CORPORATE_ID
+// auth_server_uri           = https://one.myassist.id/          → OAUTH_SERVER_URI (opsional)
+// base_url_auth             = https://auth.myassist.id/         → URL auth base
+// ── config.sql CBS A-000300 ───────────────────────────────────────────────
+// msAuth_ACCESSTOKEN_API    = 15c1e0a4ec4a4a96d29bcfc809d280a8  → access token cache (bukan client_id)
+// msAuth_REFRESHTOKEN_API   = 7bd947a413e1312ed7231bd2d6421588  → refresh token cache
 // msAuth_SERTIFIKAT_API     = d9ebe47971b415daadc3440ee4070aea  → OAUTH_SERTIFIKAT
 // msAuth_VERSI_SERTIFIKAT_API = 1.2.6                           → versi aplikasi
 // msCDSID                   = babba586c65c1a8119cfe6a6dae9972f  → DE061_SIM_SERIAL / DEVICEID
-// KodeAgentCBS              = bpr_pas                           → OAUTH_USERNAME lama
-// msKodeH2H                 = A-000300                          → OAUTH_USERNAME (UserH2H, benar)
+// msKodeH2H                 = A-000300                          → OAUTH_USERNAME (UserH2H)
 // Digunakan jika .assist.env tidak ada DAN assist-bpr.net/env tidak mengandung nilai ini
-if (empty($_oauthClientId))     $_oauthClientId     = '15c1e0a4ec4a4a96d29bcfc809d280a8'; // msAuth_ACCESSTOKEN_API
-if (empty($_oauthClientSecret)) $_oauthClientSecret = '7bd947a413e1312ed7231bd2d6421588'; // msAuth_REFRESHTOKEN_API
+if (empty($_oauthClientId))     $_oauthClientId     = '000087';                            // auth_client_id
+if (empty($_oauthClientSecret)) $_oauthClientSecret = '274FrdhikpazQXdLtv5kNoRucN7SlQPq'; // auth_client_secret
+if (empty($_oauthCorporateId))  $_oauthCorporateId  = '553231';                            // auth_corporate_id
 if (empty($_oauthSertifikat))   $_oauthSertifikat   = 'd9ebe47971b415daadc3440ee4070aea'; // msAuth_SERTIFIKAT_API
 if (empty($_oauthKodeAplikasi)) $_oauthKodeAplikasi = 'BPRPAS';                            // KodeAplikasi A-000300
 if (empty($_de061))             $_de061             = 'babba586c65c1a8119cfe6a6dae9972f'; // msCDSID
