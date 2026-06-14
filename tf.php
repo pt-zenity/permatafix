@@ -35,7 +35,7 @@
  *      dengan header: Authorization: Bearer {accessToken}
  *   4. Response di-parse dari ISO 8583 array
  *
- * Referensi: assist-switching_v3_pro v1.6.42 "Assist Pro Net"
+ * Referensi: assist-switching_v3_pro v1.6.43 "Assist Pro Net"
  *   - config/local_config.php
  *   - mvc/mbanking/mbanking.controller.php → ProsesInquiryPayment()
  *   - storage/cds/cache/*snap_tf_bank_permata.cache → KODE_AGEN + MFTFI
@@ -1544,6 +1544,43 @@ function paymentTransferBank(array $params, int $biayaAdmin = 0): array {
 }
 
 // ============================================================
+// DATA REFERENSI — MAP (harus sebelum handler POST)
+// ============================================================
+// Mapping kode numerik BI → KodeBIFAST (BIC8/BIC11) untuk DE048 BIFAST
+// Kolom KodeBIFAST di tabel bank_code — format BIC8/BIC11: {BANK}{CC}{LOC}[{BRANCH}]
+// mis. CENAIDJA = CEN(BCA) A(Asia) IDJ(Indonesia) A(primary) — BIC8 tanpa branch suffix
+// CATATAN: KodeBIFAST bisa BIC8 (8 karakter) ATAU BIC11 (11 karakter, suffix XXX = HO)
+// Nilai di bawah dikonfirmasi dari kolom KodeBIFAST tabel bank_code production.
+$mapKodeBankBIFAST = [
+    '008'    => 'BMRIIDJA',    // Bank Mandiri
+    '009'    => 'BNINIDJA',    // BNI
+    '002'    => 'BRINIDJA',    // BRI
+    '014'    => 'CENAIDJA',    // BCA — dikonfirmasi dari production DB (BIC8, bukan CENAIDJAXXX)
+    '013'    => 'BBBAIDJA',    // Bank Permata
+    '022'    => 'BIARINDJA',   // CIMB Niaga
+    '016'    => 'MBBEIDJA',    // Maybank
+    '011'    => 'BDINIDJA',    // Danamon
+    '028'    => 'NISPIDJA',    // OCBC NISP
+    '200'    => 'BTANIDJA',    // BTN
+    '019'    => 'PINBIDJA',    // Panin Bank
+    '023'    => 'UOVBIDJA',    // UOB
+    '153'    => 'MUABIDJA',    // Muamalat
+    '147'    => 'BBUKIDJA',    // Bukopin
+    '422'    => 'BSYIIDJA',    // BSI
+    '503'    => 'ARTOIDJA',    // Bank Jago
+    '506'    => 'SEAMIDJA',    // SeaBank
+    '335'    => 'BNCOIDJA',    // BNC
+    '110'    => 'BJBKIDJA',    // BJB
+    '036'    => 'BJBKIDJA',    // BJB (kode lama)
+    '441'    => 'MEGAIDJA',    // Bank Mega
+    '111'    => 'BDKIIDJA',    // Bank DKI
+    '114'    => 'BJTMIDJA',    // BPD Jatim
+    '112'    => 'BCENIDJA',    // BPD Jateng
+];
+// Jika inquiry/payment BIFAST gagal, cek nilai aktual via:
+//   SELECT Kode, Nama, KodeBIFAST FROM bank_code WHERE Kode='...'
+
+// ============================================================
 // HANDLE POST REQUEST
 // ============================================================
 $result       = null;
@@ -1731,41 +1768,9 @@ $mapKodeBankDE048 = [
     '036'    => 'BJBKIDJA',   // BJB (kode lama/RTGS — SWIFT sama)
 ];
 
-// Mapping kode numerik BI → KodeBIFAST (BIC 11-digit) untuk DE048 BIFAST
-// Kolom KodeBIFAST di tabel bank_code — format BIC11: {BANK}{CC}{LOC}{BRANCH}
-// mis. CENAIDJA = CEN(BCA) A(Asia) IDJ(Indonesia) A(primary) — BIC8 tanpa branch suffix
-// CATATAN: KodeBIFAST bisa BIC8 (8 karakter) ATAU BIC11 (11 karakter, suffix XXX = HO)
-// Nilai di bawah dikonfirmasi dari kolom KodeBIFAST tabel bank_code production.
-$mapKodeBankBIFAST = [
-    '008'    => 'BMRIIDJA',    // Bank Mandiri
-    '009'    => 'BNINIDJA',    // BNI
-    '002'    => 'BRINIDJA',    // BRI
-    '014'    => 'CENAIDJA',    // BCA — dikonfirmasi dari production DB (BIC8, bukan CENAIDJAXXX)
-    '013'    => 'BBBAIDJA',    // Bank Permata
-    '022'    => 'BIARINDJA',   // CIMB Niaga
-    '016'    => 'MBBEIDJA',    // Maybank
-    '011'    => 'BDINIDJA',    // Danamon
-    '028'    => 'NISPIDJA',    // OCBC NISP
-    '200'    => 'BTANIDJA',    // BTN
-    '019'    => 'PINBIDJA',    // Panin Bank
-    '023'    => 'UOVBIDJA',    // UOB
-    '153'    => 'MUABIDJA',    // Muamalat
-    '147'    => 'BBUKIDJA',    // Bukopin
-    '422'    => 'BSYIIDJA',    // BSI
-    '503'    => 'ARTOIDJA',    // Bank Jago
-    '506'    => 'SEAMIDJA',    // SeaBank
-    '335'    => 'BNCOIDJA',    // BNC
-    '110'    => 'BJBKIDJA',    // BJB
-    '036'    => 'BJBKIDJA',    // BJB (kode lama)
-    '441'    => 'MEGAIDJA',    // Bank Mega
-    '111'    => 'BDKIIDJA',    // Bank DKI
-    '114'    => 'BJTMIDJA',    // BPD Jatim
-    '112'    => 'BCENIDJA',    // BPD Jateng
-];
-// CATATAN: KodeBIFAST di atas adalah nilai umum/default.
-// Nilai aktual yang dipakai harus dari kolom KodeBIFAST di tabel bank_code production.
-// Jika inquiry BI-FAST gagal, cek kolom KodeBIFAST via:
-//   SELECT Kode, Nama, KodeBIFAST FROM bank_code WHERE Kode='...'
+// ============================================================
+// DATA REFERENSI — DAFTAR BANK & MAP DE048
+// ============================================================
 
 // Cek apakah konfigurasi lengkap
 $isConfigured = (KODE_AGEN !== '' && OAUTH_CLIENT_ID !== '' && OAUTH_USERNAME !== '');
@@ -3122,7 +3127,7 @@ RAW Response:
     <?php endif; ?>
 
     <div class="footer">
-        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.42 &mdash;
+        Inquiry &amp; Payment Transfer Bank — SIS/Assist Switching Middleware v1.6.43 &mdash;
         PHP <?= PHP_VERSION ?> &mdash; <?= SNow() ?> WIB
     </div>
 
